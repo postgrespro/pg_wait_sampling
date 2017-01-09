@@ -161,6 +161,8 @@ probe_waits(History *observations, HTAB *profile_hash,
 			continue;
 
 		/* Collect next wait event sample */
+		if(proc->wait_event_info == 0)
+			continue;
 		item.pid = proc->pid;
 		item.wait_event_info = proc->wait_event_info;
 		item.ts = ts;

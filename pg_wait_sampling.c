@@ -335,11 +335,18 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			PGPROC		   *proc;
 
 			proc = search_proc(PG_GETARG_UINT32(0));
-			params->items = (HistoryItem *) palloc0(sizeof(HistoryItem));
-			item = &params->items[0];
-			item->pid = proc->pid;
-			item->wait_event_info = proc->wait_event_info;
-			funcctx->max_calls = 1;
+			if (proc->wait_event_info != 0)
+			{
+				params->items = (HistoryItem *) palloc0(sizeof(HistoryItem));
+				item = &params->items[0];
+				item->pid = proc->pid;
+				item->wait_event_info = proc->wait_event_info;
+				funcctx->max_calls = 1;
+			}
+			else
+			{
+				funcctx->max_calls = 0;
+			}
 		}
 		else
 		{
@@ -352,7 +359,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			{
 				PGPROC *proc = &ProcGlobal->allProcs[i];
 
-				if (proc != NULL && proc->pid != 0)
+				if (proc != NULL && proc->pid != 0 && proc->wait_event_info != 0)
 				{
 					params->items[j].pid = proc->pid;
 					params->items[j].wait_event_info = proc->wait_event_info;
