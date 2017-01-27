@@ -1,0 +1,19 @@
+CREATE EXTENSION pg_wait_sampling;
+\d pg_wait_sampling_current
+View "public.pg_wait_sampling_current"
+   Column   |  Type   | Modifiers 
+------------+---------+-----------
+ pid        | integer | 
+ event_type | text    | 
+ event      | text    | 
+
+\d pg_wait_sampling_history
+      View "public.pg_wait_sampling_history"
+   Column   |           Type           | Modifiers 
+------------+--------------------------+-----------
+ pid        | integer                  | 
+ ts         | timestamp with time zone | 
+ event_type | text                     | 
+ event      | text                     | 
+
+DROP EXTENSION pg_wait_sampling;
