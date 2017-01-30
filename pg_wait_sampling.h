@@ -24,6 +24,8 @@
 #define	PG_WAIT_SAMPLING_MAGIC		0xCA94B107
 #define COLLECTOR_QUEUE_SIZE		(16 * 1024)
 #define HISTORY_TIME_MULTIPLIER		10
+#define PGWS_QUEUE_LOCK				0
+#define PGWS_COLLECTOR_LOCK			1
 
 typedef struct
 {
@@ -70,6 +72,7 @@ extern void check_shmem(void);
 extern CollectorShmqHeader *collector_hdr;
 extern shm_mq			   *collector_mq;
 extern void read_current_wait(PGPROC *proc, HistoryItem *item);
+extern void init_lock_tag(LOCKTAG *tag, uint32 lock);
 
 /* collector.c */
 extern void register_wait_collector(void);

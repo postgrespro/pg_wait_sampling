@@ -356,15 +356,19 @@ collector_main(Datum main_arg)
 					profile_period - (int)profile_diff));
 
 		if (rc & WL_POSTMASTER_DEATH)
-			exit(1);
+			proc_exit(1);
 
 		ResetLatch(&MyProc->procLatch);
 
 		/* Handle request if any */
 		if (collector_hdr->request != NO_REQUEST)
 		{
-			SHMRequest request = collector_hdr->request;
+			LOCKTAG		tag;
+			SHMRequest	request = collector_hdr->request;
 
+			init_lock_tag(&tag, PGWS_COLLECTOR_LOCK);
+
+			LockAcquire(&tag, ExclusiveLock, false, false);
 			collector_hdr->request = NO_REQUEST;
 
 			if (request == HISTORY_REQUEST || request == PROFILE_REQUEST)
@@ -392,6 +396,7 @@ collector_main(Datum main_arg)
 				hash_destroy(profile_hash);
 				profile_hash = make_profile_hash();
 			}
+			LockRelease(&tag, ExclusiveLock, false);
 		}
 	}
 

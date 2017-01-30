@@ -414,11 +414,11 @@ typedef struct
 	ProfileItem	   *items;
 } Profile;
 
-static void
-init_lock_tag(LOCKTAG *tag)
+void
+init_lock_tag(LOCKTAG *tag, uint32 lock)
 {
 	tag->locktag_field1 = PG_WAIT_SAMPLING_MAGIC;
-	tag->locktag_field2 = 0;
+	tag->locktag_field2 = lock;
 	tag->locktag_field3 = 0;
 	tag->locktag_field4 = 0;
 	tag->locktag_type = LOCKTAG_USERLOCK;
@@ -428,7 +428,8 @@ init_lock_tag(LOCKTAG *tag)
 static void *
 receive_array(SHMRequest request, Size item_size, Size *count)
 {
-	LOCKTAG			tag;
+	LOCKTAG			queueTag;
+	LOCKTAG			collectorTag;
 	shm_mq		   *mq;
 	shm_mq_handle  *mqh;
 	shm_mq_result	res;
@@ -438,8 +439,14 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	Pointer			result,
 					ptr;
 
-	init_lock_tag(&tag);
-	LockAcquire(&tag, ExclusiveLock, false, false);
+	/* Ensure nobody else trying to send request to queue */
+	init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
+	LockAcquire(&queueTag, ExclusiveLock, false, false);
+
+	/* Ensure collector has processed previous request */
+	init_lock_tag(&collectorTag, PGWS_COLLECTOR_LOCK);
+	LockAcquire(&collectorTag, ExclusiveLock, false, false);
+	LockRelease(&collectorTag, ExclusiveLock, false);
 
 	mq = shm_mq_create(collector_mq, COLLECTOR_QUEUE_SIZE);
 	collector_hdr->request = request;
@@ -472,7 +479,7 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 
 	shm_mq_detach(mq);
 
-	LockRelease(&tag, ExclusiveLock, false);
+	LockRelease(&queueTag, ExclusiveLock, false);
 
 	return result;
 }
@@ -568,12 +575,17 @@ Datum
 pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 {
 	LOCKTAG		tag;
+	LOCKTAG		tagCollector;
 
 	check_shmem();
 
-	init_lock_tag(&tag);
+	init_lock_tag(&tag, false);
 
 	LockAcquire(&tag, ExclusiveLock, false, false);
+
+	init_lock_tag(&tagCollector, true);
+	LockAcquire(&tagCollector, ExclusiveLock, false, false);
+	LockRelease(&tagCollector, ExclusiveLock, false);
 
 	collector_hdr->request = PROFILE_RESET;
 	SetLatch(collector_hdr->latch);
