@@ -21,13 +21,13 @@
 #include "storage/spin.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
+#include "pgstat.h"
 
 #include "pg_wait_sampling.h"
 
 static volatile sig_atomic_t shutdown_requested = false;
 
 static void handle_sigterm(SIGNAL_ARGS);
-static void collector_main(Datum main_arg);
 
 /*
  * Register background worker for collecting waits history.
@@ -41,8 +41,13 @@ register_wait_collector(void)
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	worker.bgw_restart_time = 0;
-	worker.bgw_main = collector_main;
 	worker.bgw_notify_pid = 0;
+#if PG_VERSION_NUM >= 100000
+	memcpy(worker.bgw_library_name, "pg_wait_sampling", BGW_MAXLEN);
+	memcpy(worker.bgw_function_name, CppAsString(collector_main), BGW_MAXLEN);
+#else
+	worker.bgw_main = collector_main;
+#endif
 	snprintf(worker.bgw_name, BGW_MAXLEN, "pg_wait_sampling collector");
 	worker.bgw_main_arg = (Datum)0;
 	RegisterBackgroundWorker(&worker);
@@ -263,7 +268,7 @@ millisecs_diff(TimestampTz tz1, TimestampTz tz2)
 /*
  * Main routine of wait history collector.
  */
-static void
+void
 collector_main(Datum main_arg)
 {
  	HTAB		   *profile_hash = NULL;
@@ -351,9 +356,15 @@ collector_main(Datum main_arg)
 		 * Wait until next sample time or request to do something through
 		 * shared memory.
 		 */
+#if PG_VERSION_NUM >= 100000
+		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+				Min(history_period - (int)history_diff,
+					profile_period - (int)profile_diff), PG_WAIT_EXTENSION);
+#else
 		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 				Min(history_period - (int)history_diff,
 					profile_period - (int)profile_diff));
+#endif
 
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);

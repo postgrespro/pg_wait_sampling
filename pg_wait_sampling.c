@@ -205,8 +205,13 @@ pgws_shmem_startup(void)
 	{
 		toc = shm_toc_attach(PG_WAIT_SAMPLING_MAGIC, pgws);
 
+#if PG_VERSION_NUM >= 100000
+		collector_hdr = shm_toc_lookup(toc, 0, false);
+		collector_mq = shm_toc_lookup(toc, 1, false);
+#else
 		collector_hdr = shm_toc_lookup(toc, 0);
 		collector_mq = shm_toc_lookup(toc, 1);
+#endif
 	}
 
 	shmem_initialized = true;

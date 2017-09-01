@@ -77,5 +77,6 @@ extern void init_lock_tag(LOCKTAG *tag, uint32 lock);
 /* collector.c */
 extern void register_wait_collector(void);
 extern void alloc_history(History *, int);
+extern void collector_main(Datum main_arg);
 
 #endif
