@@ -69,6 +69,9 @@ Typical installation procedure may look like this:
     $ make USE_PGXS=1 installcheck
     $ psql DB -c "CREATE EXTENSION pg_wait_sampling;"
 
+Complilation on Windows is not supported, since the extension uses symbols from PostgreSQL
+that are not exported.
+
 Usage
 -----
 
