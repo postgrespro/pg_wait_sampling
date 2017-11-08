@@ -1,4 +1,4 @@
-pg\_wait\_sampling – sampling based statistics of wait events 
+`pg_wait_sampling` – sampling based statistics of wait events
 =============================================================
 
 Introduction
@@ -7,29 +7,29 @@ Introduction
 PostgreSQL 9.6+ provides an information about current wait event of particular
 process.  However, in order to gather descriptive statistics of server
 behavior user have to sample current wait event multiple times.
-pg\_wait\_sampling is an extension for collecting sampling statistics of wait
+`pg_wait_sampling` is an extension for collecting sampling statistics of wait
 events.
 
-The module must be loaded by adding pg\_wait\_sampling to
-shared\_preload\_libraries in postgresql.conf, because it requires additional
+The module must be loaded by adding `pg_wait_sampling` to
+`shared_preload_libraries` in postgresql.conf, because it requires additional
 shared memory and launches background worker.  This means that a server restart
 is needed to add or remove the module.
 
-When pg\_wait\_sampling is enabled, it collects two kinds of statistics.
+When `pg_wait_sampling` is enabled, it collects two kinds of statistics.
 
  * History of waits events.  It's implemented as in-memory ring buffer where
    samples of each process wait events are written with given (configurable)
    period.  Therefore, for each running process user can see some number of
    recent samples depending on history size (configurable).  Assuming there is
    a client who periodically read this history and dump it somewhere, user
-   can have continuous history. 
+   can have continuous history.
  * Waits profile.  It's implemented as in-memory hash table where count
    of samples are accumulated per each process and each wait event.  This hash
    table can be reset by user request.  Assuming there is a client who
    periodically dumps profile and resets it, user can have statistics of
-   intensivity of wait events among time. 
+   intensivity of wait events among time.
 
-pg\_wait\_sampling launches special background worker for gathering the
+`pg_wait_sampling` launches special background worker for gathering the
 statistics above.
 
 Authors
@@ -41,7 +41,7 @@ Authors
 Availability
 ------------
 
-pg\_wait\_sampling is realized as an extension and not available in default
+`pg_wait_sampling` is realized as an extension and not available in default
 PostgreSQL installation. It is available from
 [github](https://github.com/postgrespro/pg_wait_sampling)
 under the same license as
@@ -51,13 +51,13 @@ and supports PostgreSQL 9.6+.
 Installation
 ------------
 
-pg\_wait\_sampling is PostgreSQL extension which requires PostgreSQL 9.6 or
-higher.  Before build and install you should ensure following:
-    
+`pg_wait_sampling` is PostgreSQL extension which requires PostgreSQL 9.6 or
+higher. Before build and install you should ensure following:
+
  * PostgreSQL version is 9.6 or higher.
  * You have development package of PostgreSQL installed or you built
    PostgreSQL from source.
- * Your PATH variable is configured so that pg\_config command available, or
+ * Your PATH variable is configured so that `pg_config` command available, or
    set PG_CONFIG variable.
 
 Typical installation procedure may look like this:
@@ -69,15 +69,15 @@ Typical installation procedure may look like this:
     $ make USE_PGXS=1 installcheck
     $ psql DB -c "CREATE EXTENSION pg_wait_sampling;"
 
-Complilation on Windows is not supported, since the extension uses symbols from PostgreSQL
+Compilation on Windows is not supported, since the extension uses symbols from PostgreSQL
 that are not exported.
 
 Usage
 -----
 
-pg\_wait\_sampling interacts with user by set of views and functions.
+`pg_wait_sampling` interacts with user by set of views and functions.
 
-pg\_wait\_sampling\_current view – information about current wait events for
+`pg_wait_sampling_current` view – information about current wait events for
 all processed including background workers.
 
 | Column name | Column type |      Description        |
@@ -86,10 +86,10 @@ all processed including background workers.
 | event_type  | text        | Name of wait event type |
 | event       | text        | Name of wait event      |
 
-pg_wait_sampling_get_current(pid int4) returns the same table for single given
+`pg_wait_sampling_get_current(pid int4)` returns the same table for single given
 process.
 
-pg\_wait\_sampling\_history view – history of wait events obtained by sampling into
+`pg_wait_sampling_history` view – history of wait events obtained by sampling into
 in-memory ring buffer.
 
 | Column name | Column type |      Description        |
@@ -99,7 +99,7 @@ in-memory ring buffer.
 | event_type  | text        | Name of wait event type |
 | event       | text        | Name of wait event      |
 
-pg\_wait\_sampling\_profile view – profile of wait events obtained by sampling into
+`pg_wait_sampling_profile` view – profile of wait events obtained by sampling into
 in-memory hash table.
 
 | Column name | Column type |      Description        |
@@ -109,7 +109,7 @@ in-memory hash table.
 | event       | text        | Name of wait event      |
 | count       | text        | Count of samples        |
 
-pg_wait_sampling_reset_profile() function resets the profile.
+`pg_wait_sampling_reset_profile()` function resets the profile.
 
 The work of wait event statistics collector worker is controlled by following
 GUCs.
@@ -121,7 +121,7 @@ GUCs.
 | pg_wait_sampling.profile_period | int4      | Period for profile sampling in milliseconds |            10 |
 | pg_wait_sampling.profile_pid    | bool      | Whether profile should be per pid           |          true |
 
-If pg\_wait\_sampling.profile\_pid is set to false, sampling profile wouldn't be
+If `pg_wait_sampling.profile_pid` is set to false, sampling profile wouldn't be
 collected in per-process manner.  In this case the value of pid could would
 be always zero and corresponding row contain samples among all the processes.
 
@@ -137,11 +137,11 @@ for list of possible wait events.
 Contribution
 ------------
 
-Please, notice, that pg\_wait\_sampling is still under development and while
+Please, notice, that `pg_wait_sampling` is still under development and while
 it's stable and tested, it may contains some bugs. Don't hesitate to raise
 [issues at github](https://github.com/postgrespro/pg_wait_sampling/issues) with
 your bug reports.
 
-If you're lacking of some functionality in pg\_wait\_sampling and feeling power
+If you're lacking of some functionality in `pg_wait_sampling` and feeling power
 to implement it then you're welcome to make pull requests.
 
