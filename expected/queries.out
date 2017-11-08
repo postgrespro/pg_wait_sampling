@@ -1,0 +1,26 @@
+CREATE EXTENSION pg_wait_sampling;
+SELECT SUM(0) FROM pg_wait_sampling_current;
+ sum 
+-----
+   0
+(1 row)
+
+SELECT SUM(0) FROM pg_wait_sampling_history;
+ sum 
+-----
+   0
+(1 row)
+
+SELECT SUM(0) FROM pg_wait_sampling_profile;
+ sum 
+-----
+   0
+(1 row)
+
+SELECT pg_wait_sampling_reset_profile();
+ pg_wait_sampling_reset_profile 
+--------------------------------
+ 
+(1 row)
+
+DROP EXTENSION pg_wait_sampling;
