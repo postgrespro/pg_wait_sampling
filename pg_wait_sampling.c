@@ -482,7 +482,11 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 		ptr += item_size;
 	}
 
+#if PG_VERSION_NUM >= 100000
+	shm_mq_detach(mqh);
+#else
 	shm_mq_detach(mq);
+#endif
 
 	LockRelease(&queueTag, ExclusiveLock, false);
 

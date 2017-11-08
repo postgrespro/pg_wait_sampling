@@ -16,4 +16,13 @@ CREATE EXTENSION pg_wait_sampling;
  event_type | text                     |           |          | 
  event      | text                     |           |          | 
 
+\d pg_wait_sampling_profile
+        View "public.pg_wait_sampling_profile"
+   Column   |  Type   | Collation | Nullable | Default 
+------------+---------+-----------+----------+---------
+ pid        | integer |           |          | 
+ event_type | text    |           |          | 
+ event      | text    |           |          | 
+ count      | bigint  |           |          | 
+
 DROP EXTENSION pg_wait_sampling;

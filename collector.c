@@ -399,7 +399,11 @@ collector_main(Datum main_arg)
 						send_profile(profile_hash, mqh);
 					}
 				}
+#if PG_VERSION_NUM >= 100000
+				shm_mq_detach(mqh);
+#else
 				shm_mq_detach(collector_mq);
+#endif
 			}
 			else if (request == PROFILE_RESET)
 			{
