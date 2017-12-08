@@ -775,14 +775,20 @@ pgws_planner_hook(Query *parse, int cursorOptions,
 	if (MyProc)
 	{
 		int i = MyProc - ProcGlobal->allProcs;
+#if PG_VERSION_NUM >= 110000
 		/*
 		 * since we depend on queryId we need to check that its size
 		 * is uint64 as we coded in pg_wait_sampling
 		 */
 		StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint64),
 				"queryId size is not uint64");
-		if (proc_queryids[i] == UINT64CONST(0))
+#else
+		StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint32),
+				"queryId size is not uint32");
+#endif
+		if (!proc_queryids[i])
 			proc_queryids[i] = parse->queryId;
+
 	}
 
 	/* Invoke original hook if needed */
