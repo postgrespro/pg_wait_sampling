@@ -441,8 +441,8 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
 		HeapTuple	tuple;
-		Datum		values[3];
-		bool		nulls[3];
+		Datum		values[4];
+		bool		nulls[4];
 		const char *event_type,
 				   *event;
 		HistoryItem *item;
