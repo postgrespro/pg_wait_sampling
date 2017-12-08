@@ -770,7 +770,7 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
  */
 static PlannedStmt *
 pgws_planner_hook(Query *parse, int cursorOptions,
-							  ParamListInfo boundParams)
+				  ParamListInfo boundParams)
 {
 	if (MyProc)
 	{
