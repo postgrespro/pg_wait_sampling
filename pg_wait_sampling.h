@@ -31,6 +31,7 @@ typedef struct
 {
 	uint32			pid;
 	uint32			wait_event_info;
+	uint64			queryId;
 	uint64			count;
 } ProfileItem;
 
@@ -38,6 +39,7 @@ typedef struct
 {
 	uint32			pid;
 	uint32			wait_event_info;
+	uint64			queryId;
 	TimestampTz		ts;
 } HistoryItem;
 
@@ -65,12 +67,14 @@ typedef struct
 	int				historyPeriod;
 	int				profilePeriod;
 	bool			profilePid;
+	bool			profileQueries;
 } CollectorShmqHeader;
 
 /* pg_wait_sampling.c */
 extern void check_shmem(void);
 extern CollectorShmqHeader *collector_hdr;
 extern shm_mq			   *collector_mq;
+extern uint64			   *proc_queryids;
 extern void read_current_wait(PGPROC *proc, HistoryItem *item);
 extern void init_lock_tag(LOCKTAG *tag, uint32 lock);
 

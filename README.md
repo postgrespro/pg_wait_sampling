@@ -27,24 +27,22 @@ When `pg_wait_sampling` is enabled, it collects two kinds of statistics.
    a client who periodically read this history and dump it somewhere, user
    can have continuous history.
  * Waits profile.  It's implemented as in-memory hash table where count
-   of samples are accumulated per each process and each wait event.  This hash
+   of samples are accumulated per each process and each wait event
+   (and each query with `pg_stat_statements`).  This hash
    table can be reset by user request.  Assuming there is a client who
    periodically dumps profile and resets it, user can have statistics of
    intensivity of wait events among time.
 
+In combination with `pg_stat_statements` this extension can also provide
+per query statistics.
+
 `pg_wait_sampling` launches special background worker for gathering the
 statistics above.
-
-Authors
--------
-
- * Alexander Korotkov <a.korotkov@postgrespro.ru>, Postgres Professional,
-   Moscow, Russia
 
 Availability
 ------------
 
-`pg_wait_sampling` is realized as an extension and not available in default
+`pg_wait_sampling` is implemented as an extension and not available in default
 PostgreSQL installation. It is available from
 [github](https://github.com/postgrespro/pg_wait_sampling)
 under the same license as
@@ -88,6 +86,7 @@ all processed including background workers.
 | pid         | int4        | Id of process           |
 | event_type  | text        | Name of wait event type |
 | event       | text        | Name of wait event      |
+| queryid     | int8        | Id of query             |
 
 `pg_wait_sampling_get_current(pid int4)` returns the same table for single given
 process.
@@ -101,6 +100,7 @@ in-memory ring buffer.
 | ts          | timestamptz | Sample timestamp        |
 | event_type  | text        | Name of wait event type |
 | event       | text        | Name of wait event      |
+| queryid     | int8        | Id of query             |
 
 `pg_wait_sampling_profile` view – profile of wait events obtained by sampling into
 in-memory hash table.
@@ -110,6 +110,7 @@ in-memory hash table.
 | pid         | int4        | Id of process           |
 | event_type  | text        | Name of wait event type |
 | event       | text        | Name of wait event      |
+| queryid     | int8        | Id of query             |
 | count       | text        | Count of samples        |
 
 `pg_wait_sampling_reset_profile()` function resets the profile.
@@ -117,21 +118,24 @@ in-memory hash table.
 The work of wait event statistics collector worker is controlled by following
 GUCs.
 
-|         Parameter name          | Data type |                  Description                | Default value |
-| ------------------------------- | --------- | ------------------------------------------- | ------------: |
-| pg_wait_sampling.history_size   | int4      | Size of history in-memory ring buffer       |          5000 |
-| pg_wait_sampling.history_period | int4      | Period for history sampling in milliseconds |            10 |
-| pg_wait_sampling.profile_period | int4      | Period for profile sampling in milliseconds |            10 |
-| pg_wait_sampling.profile_pid    | bool      | Whether profile should be per pid           |          true |
+|         Parameter name              | Data type |                  Description                | Default value |
+| ----------------------------------- | --------- | ------------------------------------------- | ------------: |
+| pg_wait_sampling.history_size       | int4      | Size of history in-memory ring buffer       |          5000 |
+| pg_wait_sampling.history_period     | int4      | Period for history sampling in milliseconds |            10 |
+| pg_wait_sampling.profile_period     | int4      | Period for profile sampling in milliseconds |            10 |
+| pg_wait_sampling.profile_pid        | bool      | Whether profile should be per pid           |          true |
+| pg_wait_sampling.profile_queries    | bool      | Whether profile should be per query			|         false |
 
 If `pg_wait_sampling.profile_pid` is set to false, sampling profile wouldn't be
 collected in per-process manner.  In this case the value of pid could would
 be always zero and corresponding row contain samples among all the processes.
 
+While `pg_wait_sampling.profile_queries` is set to false `queryid` field in
+views will be zero.
+
 These GUCs are allowed to be changed by superuser.  Also, they are placed into
 shared memory.  Thus, they could be changed from any backend and affects worker
 runtime.
-
 
 See
 [PostgreSQL documentation](http://www.postgresql.org/docs/devel/static/monitoring-stats.html#WAIT-EVENT-TABLE)
@@ -147,4 +151,12 @@ your bug reports.
 
 If you're lacking of some functionality in `pg_wait_sampling` and feeling power
 to implement it then you're welcome to make pull requests.
+
+Authors
+-------
+
+ * Alexander Korotkov <a.korotkov@postgrespro.ru>, Postgres Professional,
+   Moscow, Russia
+ * Ildus Kurbangaliev <i.kurbangaliev@gmail.com>, Postgres Professional,
+   Moscow, Russia
 

@@ -6,6 +6,7 @@ CREATE EXTENSION pg_wait_sampling;
  pid        | integer |           |          | 
  event_type | text    |           |          | 
  event      | text    |           |          | 
+ queryid    | bigint  |           |          | 
 
 \d pg_wait_sampling_history
                  View "public.pg_wait_sampling_history"
@@ -15,6 +16,7 @@ CREATE EXTENSION pg_wait_sampling;
  ts         | timestamp with time zone |           |          | 
  event_type | text                     |           |          | 
  event      | text                     |           |          | 
+ queryid    | bigint                   |           |          | 
 
 \d pg_wait_sampling_profile
         View "public.pg_wait_sampling_profile"
@@ -23,6 +25,7 @@ CREATE EXTENSION pg_wait_sampling;
  pid        | integer |           |          | 
  event_type | text    |           |          | 
  event      | text    |           |          | 
+ queryid    | bigint  |           |          | 
  count      | bigint  |           |          | 
 
 DROP EXTENSION pg_wait_sampling;

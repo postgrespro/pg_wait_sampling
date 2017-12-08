@@ -49,7 +49,7 @@ register_wait_collector(void)
 	worker.bgw_main = collector_main;
 #endif
 	snprintf(worker.bgw_name, BGW_MAXLEN, "pg_wait_sampling collector");
-	worker.bgw_main_arg = (Datum)0;
+	worker.bgw_main_arg = (Datum) 0;
 	RegisterBackgroundWorker(&worker);
 }
 
@@ -168,6 +168,12 @@ probe_waits(History *observations, HTAB *profile_hash,
 		/* Collect next wait event sample */
 		item.pid = proc->pid;
 		item.wait_event_info = proc->wait_event_info;
+
+		if (collector_hdr->profileQueries)
+			item.queryId = proc_queryids[i];
+		else
+			item.queryId = 0;
+
 		item.ts = ts;
 
 		/* Write to the history if needed */
@@ -243,9 +249,13 @@ make_profile_hash()
 
 	hash_ctl.hash = tag_hash;
 	hash_ctl.hcxt = TopMemoryContext;
-	hash_ctl.keysize = offsetof(ProfileItem, count);
-	hash_ctl.entrysize = sizeof(ProfileItem);
 
+	if (collector_hdr->profileQueries)
+		hash_ctl.keysize = offsetof(ProfileItem, count);
+	else
+		hash_ctl.keysize = offsetof(ProfileItem, queryId);
+
+	hash_ctl.entrysize = sizeof(ProfileItem);
 	return hash_create("Waits profile hash", 1024, &hash_ctl,
 					   HASH_FUNCTION | HASH_ELEM);
 }

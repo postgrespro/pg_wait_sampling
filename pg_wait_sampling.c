@@ -2,7 +2,7 @@
  * pg_wait_sampling.c
  *		Track information about wait events.
  *
- * Copyright (c) 2015-2016, Postgres Professional
+ * Copyright (c) 2015-2017, Postgres Professional
  *
  * IDENTIFICATION
  *	  contrib/pg_wait_sampling/pg_wait_sampling.c
@@ -11,8 +11,10 @@
 #include "fmgr.h"
 #include "funcapi.h"
 #include "access/htup_details.h"
+#include "access/twophase.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
+#include "optimizer/planner.h"
 #include "pgstat.h"
 #include "storage/spin.h"
 #include "storage/ipc.h"
@@ -35,14 +37,41 @@ void		_PG_fini(void);
 /* Global variables */
 bool					shmem_initialized = false;
 
+/* Hooks */
+static ExecutorEnd_hook_type	prev_ExecutorEnd = NULL;
+static planner_hook_type		planner_hook_next = NULL;
+
 /* Shared memory variables */
 shm_toc				   *toc = NULL;
-CollectorShmqHeader	   *collector_hdr = NULL;
 shm_mq				   *collector_mq = NULL;
+uint64				   *proc_queryids = NULL;
+CollectorShmqHeader	   *collector_hdr = NULL;
 
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-
 static PGPROC * search_proc(int backendPid);
+static PlannedStmt *pgws_planner_hook(Query *parse,
+		int cursorOptions, ParamListInfo boundParams);
+static void pgws_ExecutorEnd(QueryDesc *queryDesc);
+
+/*
+ * Calculate max processes count.
+ * Look at InitProcGlobal (proc.c) and TotalProcs variable in it
+ * if something wrong here.
+ */
+static int
+get_max_procs_count(void)
+{
+	int count = 0;
+
+	/* MyProcs, including autovacuum workers and launcher */
+	count += MaxBackends;
+	/* AuxiliaryProcs */
+	count += NUM_AUXILIARY_PROCS;
+	/* Prepared xacts */
+	count += max_prepared_xacts;
+
+	return count;
+}
 
 /*
  * Estimate amount of shared memory needed.
@@ -56,10 +85,11 @@ pgws_shmem_size(void)
 
 	shm_toc_initialize_estimator(&e);
 
-	nkeys = 2;
+	nkeys = 3;
 
 	shm_toc_estimate_chunk(&e, sizeof(CollectorShmqHeader));
 	shm_toc_estimate_chunk(&e, (Size) COLLECTOR_QUEUE_SIZE);
+	shm_toc_estimate_chunk(&e, sizeof(uint64) * get_max_procs_count());
 
 	shm_toc_estimate_keys(&e, nkeys);
 	size = shm_toc_estimate(&e);
@@ -109,7 +139,8 @@ setup_gucs()
 	bool		history_size_found = false,
 				history_period_found = false,
 				profile_period_found = false,
-				profile_pid_found = false;
+				profile_pid_found = false,
+				profile_queries_found = false;
 
 	guc_vars = get_guc_variables();
 	numOpts = GetNumConfigOptions();
@@ -146,6 +177,12 @@ setup_gucs()
 			var->_bool.variable = &collector_hdr->profilePid;
 			collector_hdr->profilePid = true;
 		}
+		else if (!strcmp(name, "pg_wait_sampling.profile_queries"))
+		{
+			profile_queries_found = true;
+			var->_bool.variable = &collector_hdr->profileQueries;
+			collector_hdr->profileQueries = true;
+		}
 	}
 
 	if (!history_size_found)
@@ -172,9 +209,20 @@ setup_gucs()
 				&collector_hdr->profilePid, true,
 				PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
 
-	if (history_size_found || history_period_found
-		|| profile_period_found || profile_pid_found)
+	if (!profile_queries_found)
+		DefineCustomBoolVariable("pg_wait_sampling.profile_queries",
+				"Sets whether profile should be collected per query.", NULL,
+				&collector_hdr->profileQueries, true,
+				PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
+
+	if (history_size_found
+		|| history_period_found
+		|| profile_period_found
+		|| profile_pid_found
+		|| profile_queries_found)
+	{
 		ProcessConfigFile(PGC_SIGHUP);
+	}
 }
 
 /*
@@ -197,6 +245,10 @@ pgws_shmem_startup(void)
 		shm_toc_insert(toc, 0, collector_hdr);
 		collector_mq = shm_toc_allocate(toc, COLLECTOR_QUEUE_SIZE);
 		shm_toc_insert(toc, 1, collector_mq);
+		proc_queryids = shm_toc_allocate(toc,
+									sizeof(uint64) * get_max_procs_count());
+		shm_toc_insert(toc, 2, proc_queryids);
+		MemSet(proc_queryids, 0, sizeof(uint64) * get_max_procs_count());
 
 		/* Initialize GUC variables in shared memory */
 		setup_gucs();
@@ -208,9 +260,11 @@ pgws_shmem_startup(void)
 #if PG_VERSION_NUM >= 100000
 		collector_hdr = shm_toc_lookup(toc, 0, false);
 		collector_mq = shm_toc_lookup(toc, 1, false);
+		proc_queryids = shm_toc_lookup(toc, 2, false);
 #else
 		collector_hdr = shm_toc_lookup(toc, 0);
 		collector_mq = shm_toc_lookup(toc, 1);
+		proc_queryids = shm_toc_lookup(toc, 2);
 #endif
 	}
 
@@ -255,7 +309,11 @@ _PG_init(void)
 	 * Install hooks.
 	 */
 	prev_shmem_startup_hook = shmem_startup_hook;
-	shmem_startup_hook = pgws_shmem_startup;
+	shmem_startup_hook		= pgws_shmem_startup;
+	planner_hook_next		= planner_hook;
+	planner_hook			= pgws_planner_hook;
+	prev_ExecutorEnd		= ExecutorEnd_hook;
+	ExecutorEnd_hook		= pgws_ExecutorEnd;
 }
 
 /*
@@ -322,13 +380,15 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		params->ts = GetCurrentTimestamp();
 
 		funcctx->user_fctx = params;
-		tupdesc = CreateTemplateTupleDesc(3, false);
+		tupdesc = CreateTemplateTupleDesc(4, false);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
 						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
 						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
 						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
+						   INT8OID, -1, 0);
 
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -344,6 +404,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			item = &params->items[0];
 			item->pid = proc->pid;
 			item->wait_event_info = proc->wait_event_info;
+			item->queryId = proc_queryids[proc - ProcGlobal->allProcs];
 			funcctx->max_calls = 1;
 		}
 		else
@@ -361,6 +422,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 				{
 					params->items[j].pid = proc->pid;
 					params->items[j].wait_event_info = proc->wait_event_info;
+					params->items[j].queryId = proc_queryids[i];
 					j++;
 				}
 			}
@@ -403,6 +465,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		else
 			nulls[2] = true;
 
+		values[3] = Int64GetDatumFast(item->queryId);
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
@@ -520,14 +583,16 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		funcctx->max_calls = profile->count;
 
 		/* Make tuple descriptor */
-		tupdesc = CreateTemplateTupleDesc(4, false);
+		tupdesc = CreateTemplateTupleDesc(5, false);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
 						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
 						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
 						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "count",
+		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "count",
 						   INT8OID, -1, 0);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -537,13 +602,13 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 	/* stuff done on every call of the function */
 	funcctx = SRF_PERCALL_SETUP();
 
-	profile = (Profile *)funcctx->user_fctx;
+	profile = (Profile *) funcctx->user_fctx;
 
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
 		/* for each row */
-		Datum		values[4];
-		bool		nulls[4];
+		Datum		values[5];
+		bool		nulls[5];
 		HeapTuple	tuple;
 		ProfileItem *item;
 		const char *event_type,
@@ -566,7 +631,13 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 			values[2] = PointerGetDatum(cstring_to_text(event));
 		else
 			nulls[2] = true;
-		values[3] = Int64GetDatum(item->count);
+
+		if (collector_hdr->profileQueries)
+			values[3] = Int64GetDatumFast(item->queryId);
+		else
+			values[3] = (Datum) 0;
+
+		values[4] = Int64GetDatumFast(item->count);
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
@@ -630,7 +701,7 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		funcctx->max_calls = history->count;
 
 		/* Make tuple descriptor */
-		tupdesc = CreateTemplateTupleDesc(4, false);
+		tupdesc = CreateTemplateTupleDesc(5, false);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
 						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "sample_ts",
@@ -639,6 +710,8 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "event",
 						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "queryid",
+						   INT8OID, -1, 0);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
 		MemoryContextSwitchTo(oldcontext);
@@ -653,8 +726,8 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 	{
 		HeapTuple	tuple;
 		HistoryItem *item;
-		Datum		values[4];
-		bool		nulls[4];
+		Datum		values[5];
+		bool		nulls[5];
 		const char *event_type,
 				   *event;
 
@@ -677,6 +750,7 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		else
 			nulls[3] = true;
 
+		values[4] = Int64GetDatumFast(item->queryId);
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		history->index++;
@@ -689,4 +763,46 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_VOID();
+}
+
+/*
+ * planner_hook hook, save queryId for collector
+ */
+static PlannedStmt *
+pgws_planner_hook(Query *parse, int cursorOptions,
+							  ParamListInfo boundParams)
+{
+	if (MyProc)
+	{
+		int i = MyProc - ProcGlobal->allProcs;
+		/*
+		 * since we depend on queryId we need to check that its size
+		 * is uint64 as we coded in pg_wait_sampling
+		 */
+		StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint64),
+				"queryId size is not uint64");
+		if (proc_queryids[i] == UINT64CONST(0))
+			proc_queryids[i] = parse->queryId;
+	}
+
+	/* Invoke original hook if needed */
+	if (planner_hook_next)
+		return planner_hook_next(parse, cursorOptions, boundParams);
+
+	return standard_planner(parse, cursorOptions, boundParams);
+}
+
+/*
+ * ExecutorEnd hook: clear queryId
+ */
+static void
+pgws_ExecutorEnd(QueryDesc *queryDesc)
+{
+	if (MyProc)
+		proc_queryids[MyProc - ProcGlobal->allProcs] = UINT64CONST(0);
+
+	if (prev_ExecutorEnd)
+		prev_ExecutorEnd(queryDesc);
+	else
+		standard_ExecutorEnd(queryDesc);
 }
