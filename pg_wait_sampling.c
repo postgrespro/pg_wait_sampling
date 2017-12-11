@@ -418,7 +418,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			{
 				PGPROC *proc = &ProcGlobal->allProcs[i];
 
-				if (proc != NULL && proc->pid != 0)
+				if (proc != NULL && proc->pid != 0 && proc->wait_event_info)
 				{
 					params->items[j].pid = proc->pid;
 					params->items[j].wait_event_info = proc->wait_event_info;
