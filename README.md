@@ -1,4 +1,5 @@
 [![Build Status](https://travis-ci.org/postgrespro/pg_wait_sampling.svg?branch=master)](https://travis-ci.org/postgrespro/pg_wait_sampling)
+[![PGXN version](https://badge.fury.io/pg/pg_wait_sampling.svg)](https://badge.fury.io/pg/pg_wait_sampling)
 [![GitHub license](https://img.shields.io/badge/license-PostgreSQL-blue.svg)](https://raw.githubusercontent.com/postgrespro/pg_wait_sampling/master/LICENSE)
 
 `pg_wait_sampling` – sampling based statistics of wait events
