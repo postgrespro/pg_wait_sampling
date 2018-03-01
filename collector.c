@@ -310,10 +310,7 @@ collector_main(Datum main_arg)
 
 	CurrentResourceOwner = ResourceOwnerCreate(NULL, "pg_wait_sampling collector");
 	collector_context = AllocSetContextCreate(TopMemoryContext,
-			"pg_wait_sampling context",
-			ALLOCSET_DEFAULT_MINSIZE,
-			ALLOCSET_DEFAULT_INITSIZE,
-			ALLOCSET_DEFAULT_MAXSIZE);
+			"pg_wait_sampling context", ALLOCSET_DEFAULT_SIZES);
 	old_context = MemoryContextSwitchTo(collector_context);
 	alloc_history(&observations, collector_hdr->historySize);
 	MemoryContextSwitchTo(old_context);
