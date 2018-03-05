@@ -42,9 +42,10 @@ register_wait_collector(void)
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	worker.bgw_restart_time = 0;
 	worker.bgw_notify_pid = 0;
-#if PG_VERSION_NUM >= 100000
+#if PG_VERSION_NUM >= 100000 || defined(WIN32)
 	memcpy(worker.bgw_library_name, "pg_wait_sampling", BGW_MAXLEN);
 	memcpy(worker.bgw_function_name, CppAsString(collector_main), BGW_MAXLEN);
+	worker.bgw_main = NULL;
 #else
 	worker.bgw_main = collector_main;
 #endif
