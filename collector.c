@@ -38,16 +38,13 @@ register_wait_collector(void)
 	BackgroundWorker worker;
 
 	/* Set up background worker parameters */
+	memset(&worker, 0, sizeof(worker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	worker.bgw_restart_time = 0;
 	worker.bgw_notify_pid = 0;
-#if PG_VERSION_NUM >= 100000 || defined(WIN32)
-	memcpy(worker.bgw_library_name, "pg_wait_sampling", BGW_MAXLEN);
-	memcpy(worker.bgw_function_name, CppAsString(collector_main), BGW_MAXLEN);
-#else
-	worker.bgw_main = collector_main;
-#endif
+	snprintf(worker.bgw_library_name, BGW_MAXLEN, "pg_wait_sampling");
+	snprintf(worker.bgw_function_name, BGW_MAXLEN, CppAsString(collector_main));
 	snprintf(worker.bgw_name, BGW_MAXLEN, "pg_wait_sampling collector");
 	worker.bgw_main_arg = (Datum) 0;
 	RegisterBackgroundWorker(&worker);
