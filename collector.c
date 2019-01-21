@@ -281,7 +281,7 @@ millisecs_diff(TimestampTz tz1, TimestampTz tz2)
 void
 collector_main(Datum main_arg)
 {
- 	HTAB		   *profile_hash = NULL;
+	HTAB		   *profile_hash = NULL;
 	History			observations;
 	MemoryContext	old_context,
 					collector_context;
@@ -302,6 +302,12 @@ collector_main(Datum main_arg)
 	pqsignal(SIGTERM, handle_sigterm);
 	BackgroundWorkerUnblockSignals();
 
+	InitPostgres(NULL, InvalidOid, NULL, InvalidOid, NULL, false);
+	SetProcessingMode(NormalProcessing);
+
+	/* Make pg_wait_sampling recognisable in pg_stat_activity */
+	pgstat_report_appname("pg_wait_sampling collector");
+
 	profile_hash = make_profile_hash();
 	collector_hdr->latch = &MyProc->procLatch;
 
@@ -311,6 +317,8 @@ collector_main(Datum main_arg)
 	old_context = MemoryContextSwitchTo(collector_context);
 	alloc_history(&observations, collector_hdr->historySize);
 	MemoryContextSwitchTo(old_context);
+
+	ereport(LOG, (errmsg("pg_wait_sampling collector started")));
 
 	/* Start counting time for history and profile samples */
 	profile_ts = history_ts = GetCurrentTimestamp();
@@ -430,5 +438,6 @@ collector_main(Datum main_arg)
 	 * on_dsm_detach callbacks we've registered, as well.  Once that's done,
 	 * we can go ahead and exit.
 	 */
+	ereport(LOG, (errmsg("pg_wait_sampling collector shutting down")));
 	proc_exit(0);
 }
