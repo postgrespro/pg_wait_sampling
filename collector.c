@@ -210,15 +210,25 @@ send_history(History *observations, shm_mq_handle *mqh)
 {
 	Size	count,
 			i;
+	shm_mq_result	mq_result;
 
 	if (observations->wraparound)
 		count = observations->count;
 	else
 		count = observations->index;
 
-	shm_mq_send(mqh, sizeof(count), &count, false);
+	mq_result = shm_mq_send(mqh, sizeof(count), &count, false);
+	if (mq_result == SHM_MQ_DETACHED)
+		return;
 	for (i = 0; i < count; i++)
-		shm_mq_send(mqh, sizeof(HistoryItem), &observations->items[i], false);
+	{
+		mq_result = shm_mq_send(mqh,
+								sizeof(HistoryItem),
+								&observations->items[i],
+								false);
+		if (mq_result == SHM_MQ_DETACHED)
+			return;
+	}
 }
 
 /*
