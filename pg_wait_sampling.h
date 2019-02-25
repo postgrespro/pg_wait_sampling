@@ -83,4 +83,6 @@ extern void register_wait_collector(void);
 extern void alloc_history(History *, int);
 extern void collector_main(Datum main_arg);
 
+extern void shm_mq_detach_compat(shm_mq_handle *mqh, shm_mq *mq);
+
 #endif

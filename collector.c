@@ -219,7 +219,12 @@ send_history(History *observations, shm_mq_handle *mqh)
 
 	mq_result = shm_mq_send(mqh, sizeof(count), &count, false);
 	if (mq_result == SHM_MQ_DETACHED)
+	{
+		ereport(WARNING,
+				(errmsg("pg_wait_sampling collector: "
+						"receiver of message queue have been detached")));
 		return;
+	}
 	for (i = 0; i < count; i++)
 	{
 		mq_result = shm_mq_send(mqh,
@@ -227,7 +232,12 @@ send_history(History *observations, shm_mq_handle *mqh)
 								&observations->items[i],
 								false);
 		if (mq_result == SHM_MQ_DETACHED)
+		{
+			ereport(WARNING,
+					(errmsg("pg_wait_sampling collector: "
+							"receiver of message queue have been detached")));
 			return;
+		}
 	}
 }
 
@@ -240,12 +250,27 @@ send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 	HASH_SEQ_STATUS	scan_status;
 	ProfileItem	   *item;
 	Size			count = hash_get_num_entries(profile_hash);
+	shm_mq_result	mq_result;
 
-	shm_mq_send(mqh, sizeof(count), &count, false);
+	mq_result = shm_mq_send(mqh, sizeof(count), &count, false);
+	if (mq_result == SHM_MQ_DETACHED)
+	{
+		ereport(WARNING,
+				(errmsg("pg_wait_sampling collector: "
+						"receiver of message queue have been detached")));
+		return;
+	}
 	hash_seq_init(&scan_status, profile_hash);
 	while ((item = (ProfileItem *) hash_seq_search(&scan_status)) != NULL)
 	{
-		shm_mq_send(mqh, sizeof(ProfileItem), item, false);
+		mq_result = shm_mq_send(mqh, sizeof(ProfileItem), item, false);
+		if (mq_result == SHM_MQ_DETACHED)
+		{
+			ereport(WARNING,
+					(errmsg("pg_wait_sampling collector: "
+							"receiver of message queue have been detached")));
+			return;
+		}
 	}
 }
 
@@ -428,11 +453,7 @@ collector_main(Datum main_arg)
 						send_profile(profile_hash, mqh);
 					}
 				}
-#if PG_VERSION_NUM >= 100000
-				shm_mq_detach(mqh);
-#else
-				shm_mq_detach(collector_mq);
-#endif
+				shm_mq_detach_compat(mqh, collector_mq);
 			}
 			else if (request == PROFILE_RESET)
 			{

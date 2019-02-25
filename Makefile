@@ -1,7 +1,7 @@
 # contrib/pg_wait_sampling/Makefile
 
 MODULE_big = pg_wait_sampling
-OBJS = pg_wait_sampling.o collector.o
+OBJS = pg_wait_sampling.o collector.o compat.o
 
 EXTENSION = pg_wait_sampling
 EXTVERSION = 1.1

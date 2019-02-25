@@ -530,7 +530,10 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 
 	res = shm_mq_receive(mqh, &len, &data, false);
 	if (res != SHM_MQ_SUCCESS || len != sizeof(*count))
+	{
+		shm_mq_detach_compat(mqh, mq);
 		elog(ERROR, "Error reading mq.");
+	}
 	memcpy(count, data, sizeof(*count));
 
 	result = palloc(item_size * (*count));
@@ -541,22 +544,14 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 		res = shm_mq_receive(mqh, &len, &data, false);
 		if (res != SHM_MQ_SUCCESS || len != item_size)
 		{
-#if PG_VERSION_NUM >= 100000
-			shm_mq_detach(mqh);
-#else
-			shm_mq_detach(mq);
-#endif
+			shm_mq_detach_compat(mqh, mq);
 			elog(ERROR, "Error reading mq.");
 		}
 		memcpy(ptr, data, item_size);
 		ptr += item_size;
 	}
 
-#if PG_VERSION_NUM >= 100000
-	shm_mq_detach(mqh);
-#else
-	shm_mq_detach(mq);
-#endif
+	shm_mq_detach_compat(mqh, mq);
 
 	LockRelease(&queueTag, ExclusiveLock, false);
 
