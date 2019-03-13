@@ -438,20 +438,35 @@ collector_main(Datum main_arg)
 
 			if (request == HISTORY_REQUEST || request == PROFILE_REQUEST)
 			{
+				shm_mq_result	mq_result;
+
 				/* Send history or profile */
 				shm_mq_set_sender(collector_mq, MyProc);
 				mqh = shm_mq_attach(collector_mq, NULL, NULL);
-				shm_mq_wait_for_attach(mqh);
-				if (shm_mq_get_receiver(collector_mq) != NULL)
+				mq_result = shm_mq_wait_for_attach(mqh);
+				switch (mq_result)
 				{
-					if (request == HISTORY_REQUEST)
-					{
-						send_history(&observations, mqh);
-					}
-					else if (request == PROFILE_REQUEST)
-					{
-						send_profile(profile_hash, mqh);
-					}
+					case SHM_MQ_SUCCESS:
+						switch (request)
+						{
+							case HISTORY_REQUEST:
+								send_history(&observations, mqh);
+								break;
+							case PROFILE_REQUEST:
+								send_profile(profile_hash, mqh);
+								break;
+							default:
+								AssertState(false);
+						}
+						break;
+					case SHM_MQ_DETACHED:
+						ereport(WARNING,
+								(errmsg("pg_wait_sampling collector: "
+										"receiver of message queue have been "
+										"detached")));
+						break;
+					default:
+						AssertState(false);
 				}
 				shm_mq_detach_compat(mqh, collector_mq);
 			}
