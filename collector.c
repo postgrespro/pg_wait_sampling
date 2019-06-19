@@ -436,47 +436,57 @@ collector_main(Datum main_arg)
 			LockAcquire(&tag, ExclusiveLock, false, false);
 			collector_hdr->request = NO_REQUEST;
 
-			if (request == HISTORY_REQUEST || request == PROFILE_REQUEST)
+			PG_TRY();
 			{
-				shm_mq_result	mq_result;
-
-				/* Send history or profile */
-				shm_mq_set_sender(collector_mq, MyProc);
-				mqh = shm_mq_attach(collector_mq, NULL, NULL);
-				mq_result = shm_mq_wait_for_attach(mqh);
-				switch (mq_result)
+				if (request == HISTORY_REQUEST || request == PROFILE_REQUEST)
 				{
-					case SHM_MQ_SUCCESS:
-						switch (request)
-						{
-							case HISTORY_REQUEST:
-								send_history(&observations, mqh);
-								break;
-							case PROFILE_REQUEST:
-								send_profile(profile_hash, mqh);
-								break;
-							default:
-								AssertState(false);
-						}
-						break;
-					case SHM_MQ_DETACHED:
-						ereport(WARNING,
-								(errmsg("pg_wait_sampling collector: "
-										"receiver of message queue have been "
-										"detached")));
-						break;
-					default:
-						AssertState(false);
+					shm_mq_result	mq_result;
+
+					/* Send history or profile */
+					shm_mq_set_sender(collector_mq, MyProc);
+					mqh = shm_mq_attach(collector_mq, NULL, NULL);
+					mq_result = shm_mq_wait_for_attach(mqh);
+					switch (mq_result)
+					{
+						case SHM_MQ_SUCCESS:
+							switch (request)
+							{
+								case HISTORY_REQUEST:
+									send_history(&observations, mqh);
+									break;
+								case PROFILE_REQUEST:
+									send_profile(profile_hash, mqh);
+									break;
+								default:
+									AssertState(false);
+							}
+							break;
+						case SHM_MQ_DETACHED:
+							ereport(WARNING,
+									(errmsg("pg_wait_sampling collector: "
+											"receiver of message queue have been "
+											"detached")));
+							break;
+						default:
+							AssertState(false);
+					}
+					shm_mq_detach_compat(mqh, collector_mq);
 				}
-				shm_mq_detach_compat(mqh, collector_mq);
+				else if (request == PROFILE_RESET)
+				{
+					/* Reset profile hash */
+					hash_destroy(profile_hash);
+					profile_hash = make_profile_hash();
+				}
+
+				LockRelease(&tag, ExclusiveLock, false);
 			}
-			else if (request == PROFILE_RESET)
+			PG_CATCH();
 			{
-				/* Reset profile hash */
-				hash_destroy(profile_hash);
-				profile_hash = make_profile_hash();
+				LockRelease(&tag, ExclusiveLock, false);
+				PG_RE_THROW();
 			}
-			LockRelease(&tag, ExclusiveLock, false);
+			PG_END_TRY();
 		}
 	}
 
