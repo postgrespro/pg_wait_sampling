@@ -661,11 +661,11 @@ pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 
 	check_shmem();
 
-	init_lock_tag(&tag, false);
+	init_lock_tag(&tag, PGWS_QUEUE_LOCK);
 
 	LockAcquire(&tag, ExclusiveLock, false, false);
 
-	init_lock_tag(&tagCollector, true);
+	init_lock_tag(&tagCollector, PGWS_COLLECTOR_LOCK);
 	LockAcquire(&tagCollector, ExclusiveLock, false, false);
 	LockRelease(&tagCollector, ExclusiveLock, false);
 
