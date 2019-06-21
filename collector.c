@@ -266,6 +266,7 @@ send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 		mq_result = shm_mq_send(mqh, sizeof(ProfileItem), item, false);
 		if (mq_result == SHM_MQ_DETACHED)
 		{
+			hash_seq_term(status);
 			ereport(WARNING,
 					(errmsg("pg_wait_sampling collector: "
 							"receiver of message queue have been detached")));
