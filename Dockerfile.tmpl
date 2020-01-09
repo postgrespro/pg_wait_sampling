@@ -13,8 +13,10 @@ RUN if [ "${CHECK_CODE}" = "cppcheck" ] ; then \
 	fi
 
 RUN if [ "${CHECK_CODE}" = "false" ] ; then \
-	echo 'http://dl-3.alpinelinux.org/alpine/edge/main' > /etc/apk/repositories; \
-	apk --no-cache add curl python3 gcc make musl-dev;\
+	# echo 'http://dl-3.alpinelinux.org/alpine/edge/main' > /etc/apk/repositories; \
+	# Use alpine/v3.6/main instead of alpine/edge/main to fix version of clang to '8.*.*'
+	# Install clang as well, since LLVM is enabled in PG_VERSION >= 11 by default
+	apk --no-cache add curl python3 gcc clang make musl-dev --repository http://dl-cdn.alpinelinux.org/alpine/v3.6/main;\
 	fi
 
 RUN mkdir -p /pg/data && \
