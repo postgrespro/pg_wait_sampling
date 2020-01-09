@@ -48,7 +48,7 @@ make USE_PGXS=1 install
 status=$?
 if [ $status -ne 0 ]; then exit $status; fi
 
-# add pg_pathman to shared_preload_libraries and restart cluster 'test'
+# add pg_wait_sampling to shared_preload_libraries and restart cluster 'test'
 echo "shared_preload_libraries = 'pg_wait_sampling'" >> $PGDATA/postgresql.conf
 echo "port = 55435" >> $PGDATA/postgresql.conf
 pg_ctl start -l /tmp/postgres.log -w

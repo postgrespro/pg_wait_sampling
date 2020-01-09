@@ -26,3 +26,12 @@ endif
 
 $(EXTENSION)--$(EXTVERSION).sql: setup.sql
 	cat $^ > $@
+
+# Prepare the package for PGXN submission
+package: dist dist/$(EXTENSION)-$(EXTVERSION).zip
+
+dist:
+	mkdir -p dist
+
+dist/$(EXTENSION)-$(EXTVERSION).zip:
+	git archive --format zip --prefix=$(EXTENSION)-$(EXTVERSION)/ --output $@ master
