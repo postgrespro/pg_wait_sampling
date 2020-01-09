@@ -19,10 +19,10 @@ RUN if [ "${CHECK_CODE}" = "false" ] ; then \
 	apk --no-cache add curl python3 gcc clang make musl-dev --repository http://dl-cdn.alpinelinux.org/alpine/v3.6/main;\
 	fi
 
-RUN mkdir -p /pg/data && \
+RUN mkdir -p ${PGDATA} && \
 	mkdir /pg/src && \
 	chown postgres:postgres ${PGDATA} && \
-	chmod a+rwx /usr/local/lib/postgresql && \
+	chmod -R a+rwx /usr/local/lib/postgresql && \
 	chmod a+rwx /usr/local/share/postgresql/extension
 
 ADD . /pg/src
