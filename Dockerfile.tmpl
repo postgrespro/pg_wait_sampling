@@ -3,8 +3,9 @@ FROM postgres:${PG_VERSION}-alpine
 ENV LANG=C.UTF-8 PGDATA=/pg/data
 
 RUN if [ "${CHECK_CODE}" = "clang" ] ; then \
-	echo 'http://dl-3.alpinelinux.org/alpine/edge/main' > /etc/apk/repositories; \
-	apk --no-cache add clang-analyzer make musl-dev gcc; \
+	# echo 'http://dl-3.alpinelinux.org/alpine/edge/main' > /etc/apk/repositories; \
+	# Use alpine/v3.6/main instead of alpine/edge/main to fix version of clang to '8.*.*'
+	apk --no-cache add clang-analyzer make musl-dev gcc --repository http://dl-cdn.alpinelinux.org/alpine/v3.6/main; \
 	fi
 
 RUN if [ "${CHECK_CODE}" = "cppcheck" ] ; then \
