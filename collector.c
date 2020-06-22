@@ -10,6 +10,9 @@
 #include "postgres.h"
 
 #include "catalog/pg_type.h"
+#if PG_VERSION_NUM >= 130000
+#include "common/hashfn.h"
+#endif
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
