@@ -20,6 +20,25 @@ WITH t as (SELECT sum(0) FROM pg_wait_sampling_profile)
    0
 (1 row)
 
+-- Some dummy checks just to be sure that all our functions work and return something.
+SELECT count(*) = 1 as test FROM pg_wait_sampling_get_current(pg_backend_pid());
+ test 
+------
+ t
+(1 row)
+
+SELECT count(*) > 5 as test FROM pg_wait_sampling_get_profile();
+ test 
+------
+ t
+(1 row)
+
+SELECT count(*) > 100 as test FROM pg_wait_sampling_get_history();
+ test 
+------
+ t
+(1 row)
+
 SELECT pg_wait_sampling_reset_profile();
  pg_wait_sampling_reset_profile 
 --------------------------------
