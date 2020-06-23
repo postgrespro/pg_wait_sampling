@@ -19,11 +19,11 @@ if [ "$CHECK_CODE" = "clang" ]; then
 
 elif [ "$CHECK_CODE" = "cppcheck" ]; then
     cppcheck \
-		--template "{file} ({line}): {severity} ({id}): {message}" \
+        --template "{file} ({line}): {severity} ({id}): {message}" \
         --enable=warning,portability,performance \
         --suppress=redundantAssignment \
         --suppress=uselessAssignmentPtrArg \
-		--suppress=literalWithCharPtrCompare \
+        --suppress=literalWithCharPtrCompare \
         --suppress=incorrectStringBooleanError \
         --std=c89 *.c *.h 2> cppcheck.log
 
