@@ -306,11 +306,11 @@ static int64
 millisecs_diff(TimestampTz tz1, TimestampTz tz2)
 {
 	long	secs;
-	int		millisecs;
+	int		microsecs;
 
-	TimestampDifference(tz1, tz2, &secs, &millisecs);
+	TimestampDifference(tz1, tz2, &secs, &microsecs);
 
-	return secs * 1000 + millisecs;
+	return secs * 1000 + microsecs / 1000;
 
 }
 
