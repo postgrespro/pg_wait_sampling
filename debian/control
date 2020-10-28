@@ -31,3 +31,9 @@ Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}, postgresql-12,
 Description: pg_wait-sampling provides functions for detailed per backend
  and per query statistics about PostgreSQL wait events
+
+Package: postgresql-13-pg-wait-sampling
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends}, postgresql-13,
+Description: pg_wait-sampling provides functions for detailed per backend
+ and per query statistics about PostgreSQL wait events
