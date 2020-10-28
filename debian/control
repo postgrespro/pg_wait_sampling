@@ -4,9 +4,9 @@ Priority: optional
 Maintainer: Adrien Nayrat <adrien.nayrat@anayrat.info>
 Standards-Version: 4.5.0
 Build-Depends: debhelper (>=9~), postgresql-server-dev-all (>= 141~)
-Homepage: https://github.com/postgrespro/pg_wait-sampling
-Vcs-Browser: https://github.com/postgrespro/pg_wait-sampling
-Vcs-Git: https://github.com/postgrespro/pg_wait-sampling.git
+Homepage: https://github.com/postgrespro/pg_wait_sampling
+Vcs-Browser: https://github.com/postgrespro/pg_wait_sampling
+Vcs-Git: https://github.com/postgrespro/pg_wait_sampling.git
 
 Package: postgresql-9.6-pg-wait-sampling
 Architecture: any
