@@ -28,10 +28,11 @@ $(EXTENSION)--$(EXTVERSION).sql: setup.sql
 	cat $^ > $@
 
 # Prepare the package for PGXN submission
-package: dist dist/$(EXTENSION)-$(EXTVERSION).zip
+DISTVERSION := $(shell git tag -l | tail -n 1 | cut -d 'v' -f 2)
+package: dist dist/$(EXTENSION)-$(DISTVERSION).zip
 
 dist:
 	mkdir -p dist
 
-dist/$(EXTENSION)-$(EXTVERSION).zip:
-	git archive --format zip --prefix=$(EXTENSION)-$(EXTVERSION)/ --output $@ master
+dist/$(EXTENSION)-$(DISTVERSION).zip:
+	git archive --format zip --prefix=$(EXTENSION)-$(DISTVERSION)/ --output $@ HEAD
