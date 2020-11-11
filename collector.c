@@ -10,6 +10,9 @@
 #include "postgres.h"
 
 #include "catalog/pg_type.h"
+#if PG_VERSION_NUM >= 130000
+#include "common/hashfn.h"
+#endif
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
@@ -303,11 +306,11 @@ static int64
 millisecs_diff(TimestampTz tz1, TimestampTz tz2)
 {
 	long	secs;
-	int		millisecs;
+	int		microsecs;
 
-	TimestampDifference(tz1, tz2, &secs, &millisecs);
+	TimestampDifference(tz1, tz2, &secs, &microsecs);
 
-	return secs * 1000 + millisecs;
+	return secs * 1000 + microsecs / 1000;
 
 }
 

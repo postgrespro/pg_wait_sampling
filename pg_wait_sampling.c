@@ -50,6 +50,9 @@ CollectorShmqHeader	   *collector_hdr = NULL;
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static PGPROC * search_proc(int backendPid);
 static PlannedStmt *pgws_planner_hook(Query *parse,
+#if PG_VERSION_NUM >= 130000
+		const char *query_string,
+#endif
 		int cursorOptions, ParamListInfo boundParams);
 static void pgws_ExecutorEnd(QueryDesc *queryDesc);
 
@@ -771,7 +774,11 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
  * planner_hook hook, save queryId for collector
  */
 static PlannedStmt *
-pgws_planner_hook(Query *parse, int cursorOptions,
+pgws_planner_hook(Query *parse,
+#if PG_VERSION_NUM >= 130000
+				  const char *query_string,
+#endif
+				  int cursorOptions,
 				  ParamListInfo boundParams)
 {
 	if (MyProc)
@@ -795,9 +802,17 @@ pgws_planner_hook(Query *parse, int cursorOptions,
 
 	/* Invoke original hook if needed */
 	if (planner_hook_next)
-		return planner_hook_next(parse, cursorOptions, boundParams);
+		return planner_hook_next(parse,
+#if PG_VERSION_NUM >= 130000
+				query_string,
+#endif
+				cursorOptions, boundParams);
 
-	return standard_planner(parse, cursorOptions, boundParams);
+	return standard_planner(parse,
+#if PG_VERSION_NUM >= 130000
+				query_string,
+#endif
+			cursorOptions, boundParams);
 }
 
 /*
