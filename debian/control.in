@@ -11,5 +11,6 @@ Vcs-Git: https://github.com/postgrespro/pg_wait_sampling.git
 Package: postgresql-PGVERSION-pg-wait-sampling
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}, postgresql-PGVERSION,
-Description: pg_wait-sampling provides functions for detailed per backend
- and per query statistics about PostgreSQL wait events
+Description: Extension providing statistics about PostgreSQL wait events
+ pg_wait-sampling is an extension which provides functions for detailed
+ per backend and per query wait events statistics.
