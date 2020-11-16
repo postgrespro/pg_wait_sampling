@@ -11,29 +11,34 @@ Vcs-Git: https://github.com/postgrespro/pg_wait_sampling.git
 Package: postgresql-9.6-pg-wait-sampling
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}, postgresql-9.6,
-Description: pg_wait-sampling provides functions for detailed per backend
- and per query statistics about PostgreSQL wait events
+Description: Extension providing statistics about PostgreSQL wait events
+ pg_wait-sampling is an extension which provides functions for detailed
+ per backend and per query wait events statistics.
 
 Package: postgresql-10-pg-wait-sampling
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}, postgresql-10,
-Description: pg_wait-sampling provides functions for detailed per backend
- and per query statistics about PostgreSQL wait events
+Description: Extension providing statistics about PostgreSQL wait events
+ pg_wait-sampling is an extension which provides functions for detailed
+ per backend and per query wait events statistics.
 
 Package: postgresql-11-pg-wait-sampling
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}, postgresql-11,
-Description: pg_wait-sampling provides functions for detailed per backend
- and per query statistics about PostgreSQL wait events
+Description: Extension providing statistics about PostgreSQL wait events
+ pg_wait-sampling is an extension which provides functions for detailed
+ per backend and per query wait events statistics.
 
 Package: postgresql-12-pg-wait-sampling
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}, postgresql-12,
-Description: pg_wait-sampling provides functions for detailed per backend
- and per query statistics about PostgreSQL wait events
+Description: Extension providing statistics about PostgreSQL wait events
+ pg_wait-sampling is an extension which provides functions for detailed
+ per backend and per query wait events statistics.
 
 Package: postgresql-13-pg-wait-sampling
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}, postgresql-13,
-Description: pg_wait-sampling provides functions for detailed per backend
- and per query statistics about PostgreSQL wait events
+Description: Extension providing statistics about PostgreSQL wait events
+ pg_wait-sampling is an extension which provides functions for detailed
+ per backend and per query wait events statistics.
