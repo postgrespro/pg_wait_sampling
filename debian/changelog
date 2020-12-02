@@ -1,3 +1,11 @@
+pg-wait-sampling (1.1.2-2) unstable; urgency=medium
+
+  * Team upload.
+  * Use dh --with pgxs_loop.
+  * R³: no, DH 13.
+
+ -- Christoph Berg <myon@debian.org>  Wed, 02 Dec 2020 15:49:35 +0100
+
 pg-wait-sampling (1.1.2-1) unstable; urgency=medium
 
   * New upstream version compatible with PG13
