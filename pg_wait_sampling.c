@@ -8,24 +8,27 @@
  *	  contrib/pg_wait_sampling/pg_wait_sampling.c
  */
 #include "postgres.h"
-#include "fmgr.h"
-#include "funcapi.h"
+
 #include "access/htup_details.h"
 #include "access/twophase.h"
 #include "catalog/pg_type.h"
+#include "fmgr.h"
+#include "funcapi.h"
 #include "miscadmin.h"
 #include "optimizer/planner.h"
 #include "pgstat.h"
-#include "storage/spin.h"
 #include "storage/ipc.h"
 #include "storage/pg_shmem.h"
 #include "storage/procarray.h"
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
+#include "storage/spin.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
-#include "utils/guc.h"
 #include "utils/guc_tables.h"
+#include "utils/guc.h"
+#include "utils/memutils.h" /* TopMemoryContext.  Actually for PG 9.6 only,
+							 * but there should be no harm for others. */
 
 #include "pg_wait_sampling.h"
 
