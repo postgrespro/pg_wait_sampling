@@ -548,6 +548,9 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	 * We switch to TopMemoryContext, so that recv_mqh is allocated there
 	 * and is guaranteed to survive until before_shmem_exit callbacks are
 	 * fired.  Anyway, shm_mq_detach() will free handler on its own.
+	 *
+	 * NB: we do not pass `seg` to shm_mq_attach(), so it won't set its own
+	 * callback, i.e. we do not interfere here with shm_mq_detach_callback().
 	 */
 	oldctx = MemoryContextSwitchTo(TopMemoryContext);
 	recv_mqh = shm_mq_attach(recv_mq, NULL, NULL);
@@ -566,10 +569,8 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	{
 		res = shm_mq_receive(recv_mqh, &len, &data, false);
 		if (res != SHM_MQ_SUCCESS || len != sizeof(*count))
-		{
-			shm_mq_detach_compat(recv_mqh, recv_mq);
-			elog(ERROR, "Error reading mq.");
-		}
+			elog(ERROR, "error reading mq");
+
 		memcpy(count, data, sizeof(*count));
 
 		result = palloc(item_size * (*count));
@@ -579,10 +580,8 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 		{
 			res = shm_mq_receive(recv_mqh, &len, &data, false);
 			if (res != SHM_MQ_SUCCESS || len != item_size)
-			{
-				shm_mq_detach_compat(recv_mqh, recv_mq);
-				elog(ERROR, "Error reading mq.");
-			}
+				elog(ERROR, "error reading mq");
+
 			memcpy(ptr, data, item_size);
 			ptr += item_size;
 		}
@@ -591,7 +590,6 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 
 	/* We still have to detach and release lock during normal operation. */
 	shm_mq_detach_compat(recv_mqh, recv_mq);
-
 	LockRelease(&queueTag, ExclusiveLock, false);
 
 	return result;
