@@ -153,6 +153,16 @@ your bug reports.
 If you're lacking of some functionality in `pg_wait_sampling` and feeling power
 to implement it then you're welcome to make pull requests.
 
+Releases
+--------
+
+New features are developed in feature-branches and then merged into [master](https://github.com/postgrespro/pg_wait_sampling/tree/master). To make a new release:
+
+1) Bump `PGXN` version in the `META.json`.
+2) Merge [master](https://github.com/postgrespro/pg_wait_sampling/tree/master) into [stable](https://github.com/postgrespro/pg_wait_sampling/tree/stable).
+3) Tag new release in the [stable](https://github.com/postgrespro/pg_wait_sampling/tree/stable) with `git tag -a v1.1.X`, where the last digit is used for indicating compatible shared library changes and bugfixes. Second digit is used to indicate extension schema change, i.e. when `ALTER EXTENSION pg_wait_sampling UPDATE;` is required.
+4) Merge [stable](https://github.com/postgrespro/pg_wait_sampling/tree/stable) into [debian](https://github.com/postgrespro/pg_wait_sampling/tree/debian). This separate branch is used to independently support `Debian` packaging and @anayrat with @df7cb have an access there. 
+
 Authors
 -------
 

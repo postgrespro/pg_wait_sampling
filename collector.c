@@ -225,7 +225,7 @@ send_history(History *observations, shm_mq_handle *mqh)
 	{
 		ereport(WARNING,
 				(errmsg("pg_wait_sampling collector: "
-						"receiver of message queue have been detached")));
+						"receiver of message queue has been detached")));
 		return;
 	}
 	for (i = 0; i < count; i++)
@@ -238,7 +238,7 @@ send_history(History *observations, shm_mq_handle *mqh)
 		{
 			ereport(WARNING,
 					(errmsg("pg_wait_sampling collector: "
-							"receiver of message queue have been detached")));
+							"receiver of message queue has been detached")));
 			return;
 		}
 	}
@@ -260,7 +260,7 @@ send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 	{
 		ereport(WARNING,
 				(errmsg("pg_wait_sampling collector: "
-						"receiver of message queue have been detached")));
+						"receiver of message queue has been detached")));
 		return;
 	}
 	hash_seq_init(&scan_status, profile_hash);
@@ -272,7 +272,7 @@ send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 			hash_seq_term(&scan_status);
 			ereport(WARNING,
 					(errmsg("pg_wait_sampling collector: "
-							"receiver of message queue have been detached")));
+							"receiver of message queue has been detached")));
 			return;
 		}
 	}
@@ -468,7 +468,7 @@ collector_main(Datum main_arg)
 						case SHM_MQ_DETACHED:
 							ereport(WARNING,
 									(errmsg("pg_wait_sampling collector: "
-											"receiver of message queue have been "
+											"receiver of message queue has been "
 											"detached")));
 							break;
 						default:
