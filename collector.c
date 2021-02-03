@@ -440,6 +440,12 @@ collector_main(Datum main_arg)
 			LockAcquire(&tag, ExclusiveLock, false, false);
 			collector_hdr->request = NO_REQUEST;
 
+			/*
+			 * XXX: it is very likely that this TRY/CATCH is useless.  If any
+			 * error occurs, collector's bgworker will exit cancelling the lock.
+			 *
+			 * TODO: thus, consider reverting commit e6f52a7547a15.
+			 */
 			PG_TRY();
 			{
 				if (request == HISTORY_REQUEST || request == PROFILE_REQUEST)
