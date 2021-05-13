@@ -5,3 +5,4 @@
 *pg_wait_sampling--1.1.sql
 .log
 Dockerfile
+/log/
