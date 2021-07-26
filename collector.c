@@ -440,63 +440,47 @@ collector_main(Datum main_arg)
 			LockAcquire(&tag, ExclusiveLock, false, false);
 			collector_hdr->request = NO_REQUEST;
 
-			/*
-			 * XXX: it is very likely that this TRY/CATCH is useless.  If any
-			 * error occurs, collector's bgworker will exit cancelling the lock.
-			 *
-			 * TODO: thus, consider reverting commit e6f52a7547a15.
-			 */
-			PG_TRY();
+			if (request == HISTORY_REQUEST || request == PROFILE_REQUEST)
 			{
-				if (request == HISTORY_REQUEST || request == PROFILE_REQUEST)
-				{
-					shm_mq_result	mq_result;
+				shm_mq_result	mq_result;
 
-					/* Send history or profile */
-					shm_mq_set_sender(collector_mq, MyProc);
-					mqh = shm_mq_attach(collector_mq, NULL, NULL);
-					mq_result = shm_mq_wait_for_attach(mqh);
-					switch (mq_result)
-					{
-						case SHM_MQ_SUCCESS:
-							switch (request)
-							{
-								case HISTORY_REQUEST:
-									send_history(&observations, mqh);
-									break;
-								case PROFILE_REQUEST:
-									send_profile(profile_hash, mqh);
-									break;
-								default:
-									AssertState(false);
-							}
-							break;
-						case SHM_MQ_DETACHED:
-							ereport(WARNING,
-									(errmsg("pg_wait_sampling collector: "
-											"receiver of message queue has been "
-											"detached")));
-							break;
-						default:
-							AssertState(false);
-					}
-					shm_mq_detach_compat(mqh, collector_mq);
-				}
-				else if (request == PROFILE_RESET)
+				/* Send history or profile */
+				shm_mq_set_sender(collector_mq, MyProc);
+				mqh = shm_mq_attach(collector_mq, NULL, NULL);
+				mq_result = shm_mq_wait_for_attach(mqh);
+				switch (mq_result)
 				{
-					/* Reset profile hash */
-					hash_destroy(profile_hash);
-					profile_hash = make_profile_hash();
+					case SHM_MQ_SUCCESS:
+						switch (request)
+						{
+							case HISTORY_REQUEST:
+								send_history(&observations, mqh);
+								break;
+							case PROFILE_REQUEST:
+								send_profile(profile_hash, mqh);
+								break;
+							default:
+								AssertState(false);
+						}
+						break;
+					case SHM_MQ_DETACHED:
+						ereport(WARNING,
+								(errmsg("pg_wait_sampling collector: "
+										"receiver of message queue have been "
+										"detached")));
+						break;
+					default:
+						AssertState(false);
 				}
-
-				LockRelease(&tag, ExclusiveLock, false);
+				shm_mq_detach_compat(mqh, collector_mq);
 			}
-			PG_CATCH();
+			else if (request == PROFILE_RESET)
 			{
-				LockRelease(&tag, ExclusiveLock, false);
-				PG_RE_THROW();
+				/* Reset profile hash */
+				hash_destroy(profile_hash);
+				profile_hash = make_profile_hash();
 			}
-			PG_END_TRY();
+			LockRelease(&tag, ExclusiveLock, false);
 		}
 	}
 
