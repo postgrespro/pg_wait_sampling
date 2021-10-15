@@ -9,9 +9,9 @@ Homepage: https://github.com/postgrespro/pg_wait_sampling
 Vcs-Browser: https://github.com/postgrespro/pg_wait_sampling
 Vcs-Git: https://github.com/postgrespro/pg_wait_sampling.git -b debian
 
-Package: postgresql-13-pg-wait-sampling
+Package: postgresql-14-pg-wait-sampling
 Architecture: any
-Depends: ${misc:Depends}, ${shlibs:Depends}, postgresql-13,
+Depends: ${misc:Depends}, ${shlibs:Depends}, postgresql-14,
 Description: Extension providing statistics about PostgreSQL wait events
  pg_wait-sampling is an extension which provides functions for detailed
  per backend and per query wait events statistics.
