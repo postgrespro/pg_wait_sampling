@@ -220,7 +220,7 @@ send_history(History *observations, shm_mq_handle *mqh)
 	else
 		count = observations->index;
 
-	mq_result = shm_mq_send(mqh, sizeof(count), &count, false);
+	mq_result = shm_mq_send_compat(mqh, sizeof(count), &count, false, true);
 	if (mq_result == SHM_MQ_DETACHED)
 	{
 		ereport(WARNING,
@@ -230,10 +230,11 @@ send_history(History *observations, shm_mq_handle *mqh)
 	}
 	for (i = 0; i < count; i++)
 	{
-		mq_result = shm_mq_send(mqh,
+		mq_result = shm_mq_send_compat(mqh,
 								sizeof(HistoryItem),
 								&observations->items[i],
-								false);
+								false,
+								true);
 		if (mq_result == SHM_MQ_DETACHED)
 		{
 			ereport(WARNING,
@@ -255,7 +256,7 @@ send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 	Size			count = hash_get_num_entries(profile_hash);
 	shm_mq_result	mq_result;
 
-	mq_result = shm_mq_send(mqh, sizeof(count), &count, false);
+	mq_result = shm_mq_send_compat(mqh, sizeof(count), &count, false, true);
 	if (mq_result == SHM_MQ_DETACHED)
 	{
 		ereport(WARNING,
@@ -266,7 +267,8 @@ send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 	hash_seq_init(&scan_status, profile_hash);
 	while ((item = (ProfileItem *) hash_seq_search(&scan_status)) != NULL)
 	{
-		mq_result = shm_mq_send(mqh, sizeof(ProfileItem), item, false);
+		mq_result = shm_mq_send_compat(mqh, sizeof(ProfileItem), item, false,
+									   true);
 		if (mq_result == SHM_MQ_DETACHED)
 		{
 			hash_seq_term(&scan_status);
