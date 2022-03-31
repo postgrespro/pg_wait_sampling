@@ -17,6 +17,10 @@
 #include "miscadmin.h"
 #include "optimizer/planner.h"
 #include "pgstat.h"
+#include "postmaster/autovacuum.h"
+#if PG_VERSION_NUM >= 120000
+#include "replication/walsender.h"
+#endif
 #include "storage/ipc.h"
 #include "storage/pg_shmem.h"
 #include "storage/procarray.h"
@@ -66,20 +70,46 @@ static void pgws_ExecutorEnd(QueryDesc *queryDesc);
 
 /*
  * Calculate max processes count.
- * Look at InitProcGlobal (proc.c) and TotalProcs variable in it
- * if something wrong here.
+ *
+ * The value has to be in sync with ProcGlobal->allProcCount, initialized in
+ * InitProcGlobal() (proc.c).
+ *
+ * We calculate the value here as it won't initialized when we need need
+ * it during _PG_init().
+ *
+ * Note that the value returned during _PG_init() might be different from the
+ * value returned later if some third-party modules change one of the
+ * underlying GUC.  This isn't ideal but can't lead to a crash, as the value
+ * returned during _PG_init() is only used to ask for additional shmem with
+ * RequestAddinShmemSpace(), and postgres has an extra 100kB of shmem to
+ * compensate some small unaccounted usage.  So if the value later changes, we
+ * will allocate and initialize the new (and correct) memory size, which
+ * will either work thanks for the extra 100kB of shmem, of fail (and prevent
+ * postgres startup) due to an out of shared memory error.
  */
 static int
 get_max_procs_count(void)
 {
 	int count = 0;
 
-	/* MyProcs, including autovacuum workers and launcher */
-	count += MaxBackends;
+	/*
+	 * MaxBackends: bgworkers, autovacuum workers and launcher.
+	 * This has to be in sync with the value computed in
+	 * InitializeMaxBackends() (postinit.c)
+	 */
+	count += MaxConnections + autovacuum_max_workers + 1
+			+ max_worker_processes;
+
+	/*
+	 * Starting with pg12, wal senders aren't part of MaxConnections anymore
+	 * and have to be accounted for.
+	 */
+#if PG_VERSION_NUM >= 120000
+	count += max_wal_senders;
+#endif
+
 	/* AuxiliaryProcs */
 	count += NUM_AUXILIARY_PROCS;
-	/* Prepared xacts */
-	count += max_prepared_xacts;
 
 	return count;
 }
