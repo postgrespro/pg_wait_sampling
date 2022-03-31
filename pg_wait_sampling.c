@@ -74,8 +74,8 @@ static void pgws_ExecutorEnd(QueryDesc *queryDesc);
  * The value has to be in sync with ProcGlobal->allProcCount, initialized in
  * InitProcGlobal() (proc.c).
  *
- * We calculate the value here as it won't initialized when we need need
- * it during _PG_init().
+ * We calculate the value here as it won't initialized when we need it during
+ * _PG_init().
  *
  * Note that the value returned during _PG_init() might be different from the
  * value returned later if some third-party modules change one of the
