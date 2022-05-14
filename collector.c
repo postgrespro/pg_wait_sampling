@@ -44,7 +44,7 @@ register_wait_collector(void)
 	memset(&worker, 0, sizeof(worker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
-	worker.bgw_restart_time = 0;
+	worker.bgw_restart_time = 1;
 	worker.bgw_notify_pid = 0;
 	snprintf(worker.bgw_library_name, BGW_MAXLEN, "pg_wait_sampling");
 	snprintf(worker.bgw_function_name, BGW_MAXLEN, CppAsString(collector_main));
