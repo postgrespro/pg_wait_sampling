@@ -39,7 +39,6 @@
 PG_MODULE_MAGIC;
 
 void		_PG_init(void);
-void		_PG_fini(void);
 
 /* Global variables */
 bool					shmem_initialized = false;
@@ -359,20 +358,12 @@ _PG_init(void)
 	 */
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook		= pgws_shmem_startup;
+	prev_shmem_startup_hook = shmem_startup_hook;
+	shmem_startup_hook		= pgws_shmem_startup;
 	planner_hook_next		= planner_hook;
 	planner_hook			= pgws_planner_hook;
 	prev_ExecutorEnd		= ExecutorEnd_hook;
 	ExecutorEnd_hook		= pgws_ExecutorEnd;
-}
-
-/*
- * Module unload callback
- */
-void
-_PG_fini(void)
-{
-	/* Uninstall hooks. */
-	shmem_startup_hook = prev_shmem_startup_hook;
 }
 
 /*
