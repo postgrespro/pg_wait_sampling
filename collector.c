@@ -339,8 +339,16 @@ collector_main(Datum main_arg)
 	 * any equivalent of the backend's command-read loop, where interrupts can
 	 * be processed immediately, so make sure ImmediateInterruptOK is turned
 	 * off.
+	 *
+	 * We also want to respond to the ProcSignal notifications.  This is done
+	 * in the upstream provided procsignal_sigusr1_handler, which is
+	 * automatically used if a bgworker connects to a database.  But since our
+	 * worker doesn't connect to any database even though it calls
+	 * InitPostgres, which will still initializze a new backend and thus
+	 * partitipate to the ProcSignal infrastructure.
 	 */
 	pqsignal(SIGTERM, handle_sigterm);
+	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
 	BackgroundWorkerUnblockSignals();
 
 #if PG_VERSION_NUM >= 110000
@@ -378,6 +386,9 @@ collector_main(Datum main_arg)
 						profile_period;
 		bool			write_history,
 						write_profile;
+
+		/* We need an explicit call for at least ProcSignal notifications. */
+		CHECK_FOR_INTERRUPTS();
 
 		/* Wait calculate time to next sample for history or profile */
 		current_ts = GetCurrentTimestamp();
