@@ -39,7 +39,6 @@
 PG_MODULE_MAGIC;
 
 void		_PG_init(void);
-void		_PG_fini(void);
 
 /* Global variables */
 bool					shmem_initialized = false;
@@ -59,6 +58,9 @@ shm_mq		   *recv_mq = NULL;
 shm_mq_handle  *recv_mqh = NULL;
 LOCKTAG			queueTag;
 
+#if PG_VERSION_NUM >= 150000
+static shmem_request_hook_type prev_shmem_request_hook = NULL;
+#endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static PGPROC * search_proc(int backendPid);
 static PlannedStmt *pgws_planner_hook(Query *parse,
@@ -74,28 +76,40 @@ static void pgws_ExecutorEnd(QueryDesc *queryDesc);
  * The value has to be in sync with ProcGlobal->allProcCount, initialized in
  * InitProcGlobal() (proc.c).
  *
- * We calculate the value here as it won't initialized when we need it during
- * _PG_init().
- *
- * Note that the value returned during _PG_init() might be different from the
- * value returned later if some third-party modules change one of the
- * underlying GUC.  This isn't ideal but can't lead to a crash, as the value
- * returned during _PG_init() is only used to ask for additional shmem with
- * RequestAddinShmemSpace(), and postgres has an extra 100kB of shmem to
- * compensate some small unaccounted usage.  So if the value later changes, we
- * will allocate and initialize the new (and correct) memory size, which
- * will either work thanks for the extra 100kB of shmem, of fail (and prevent
- * postgres startup) due to an out of shared memory error.
  */
 static int
 get_max_procs_count(void)
 {
 	int count = 0;
 
+	/* First, add the maximum number of backends (MaxBackends). */
+#if PG_VERSION_NUM >= 150000
 	/*
-	 * MaxBackends: bgworkers, autovacuum workers and launcher.
+	 * On pg15+, we can directly access the MaxBackends variable, as it will
+	 * have already been initialized in shmem_request_hook.
+	 */
+	Assert(MaxBackends > 0);
+	count += MaxBackends;
+#else
+	/*
+	 * On older versions, we need to compute MaxBackends: bgworkers, autovacuum
+	 * workers and launcher.
 	 * This has to be in sync with the value computed in
 	 * InitializeMaxBackends() (postinit.c)
+	 *
+	 * Note that we need to calculate the value as it won't initialized when we
+	 * need it during _PG_init().
+	 *
+	 * Note also that the value returned during _PG_init() might be different
+	 * from the value returned later if some third-party modules change one of
+	 * the underlying GUC.  This isn't ideal but can't lead to a crash, as the
+	 * value returned during _PG_init() is only used to ask for additional
+	 * shmem with RequestAddinShmemSpace(), and postgres has an extra 100kB of
+	 * shmem to compensate some small unaccounted usage.  So if the value later
+	 * changes, we will allocate and initialize the new (and correct) memory
+	 * size, which will either work thanks for the extra 100kB of shmem, of
+	 * fail (and prevent postgres startup) due to an out of shared memory
+	 * error.
 	 */
 	count += MaxConnections + autovacuum_max_workers + 1
 			+ max_worker_processes;
@@ -106,9 +120,11 @@ get_max_procs_count(void)
 	 */
 #if PG_VERSION_NUM >= 120000
 	count += max_wal_senders;
-#endif
+#endif		/* pg 12+ */
+#endif		/* pg 15- */
+	/* End of MaxBackends calculation. */
 
-	/* AuxiliaryProcs */
+	/* Add AuxiliaryProcs */
 	count += NUM_AUXILIARY_PROCS;
 
 	return count;
@@ -266,6 +282,23 @@ setup_gucs()
 	}
 }
 
+#if PG_VERSION_NUM >= 150000
+/*
+ * shmem_request hook: request additional shared memory resources.
+ *
+ * If you change code here, don't forget to also report the modifications in
+ * _PG_init() for pg14 and below.
+ */
+static void
+pgws_shmem_request(void)
+{
+	if (prev_shmem_request_hook)
+		prev_shmem_request_hook();
+
+	RequestAddinShmemSpace(pgws_shmem_size());
+}
+#endif
+
 /*
  * Distribute shared memory.
  */
@@ -345,34 +378,33 @@ _PG_init(void)
 	if (!process_shared_preload_libraries_in_progress)
 		return;
 
+#if PG_VERSION_NUM < 150000
 	/*
 	 * Request additional shared resources.  (These are no-ops if we're not in
 	 * the postmaster process.)  We'll allocate or attach to the shared
 	 * resources in pgws_shmem_startup().
+	 *
+	 * If you change code here, don't forget to also report the modifications
+	 * in pgsp_shmem_request() for pg15 and later.
 	 */
 	RequestAddinShmemSpace(pgws_shmem_size());
+#endif
 
 	register_wait_collector();
 
 	/*
 	 * Install hooks.
 	 */
+#if PG_VERSION_NUM >= 150000
+	prev_shmem_request_hook = shmem_request_hook;
+	shmem_request_hook		= pgws_shmem_request;
+#endif
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook		= pgws_shmem_startup;
 	planner_hook_next		= planner_hook;
 	planner_hook			= pgws_planner_hook;
 	prev_ExecutorEnd		= ExecutorEnd_hook;
 	ExecutorEnd_hook		= pgws_ExecutorEnd;
-}
-
-/*
- * Module unload callback
- */
-void
-_PG_fini(void)
-{
-	/* Uninstall hooks. */
-	shmem_startup_hook = prev_shmem_startup_hook;
 }
 
 /*
