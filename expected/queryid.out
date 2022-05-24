@@ -1,0 +1,37 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_update_tuple s2_try_to_concurrently_update_tuple s1_wait_one_sec s1_rollback_txn s2_expose_wait_on_txn_in_profile
+step s1_update_tuple: 
+		BEGIN;
+		UPDATE test SET i = i+1;
+
+step s2_try_to_concurrently_update_tuple: 
+		BEGIN;
+		UPDATE test SET i = i+1;
+		ROLLBACK;
+ <waiting ...>
+step s1_wait_one_sec: 
+		SELECT pg_sleep(1);
+
+pg_sleep
+--------
+        
+(1 row)
+
+step s1_rollback_txn: 
+		ROLLBACK;
+
+step s2_try_to_concurrently_update_tuple: <... completed>
+step s2_expose_wait_on_txn_in_profile: 
+		SELECT query
+		FROM pg_wait_sampling_profile pgws
+		JOIN pg_stat_statements pgss using (queryid)
+		WHERE pid = pg_backend_pid()
+		  AND event_type = 'Lock' AND event = 'transactionid'
+		  AND count between 90 and 110;
+
+query                   
+------------------------
+UPDATE test SET i = i+$1
+(1 row)
+
