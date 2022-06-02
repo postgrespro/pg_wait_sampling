@@ -114,6 +114,10 @@ get_max_procs_count(void)
 	count += MaxConnections + autovacuum_max_workers + 1
 			+ max_worker_processes;
 
+#if PG_VERSION_NUM >= 140000 && defined(PGPRO_EE)
+	count += MaxATX;
+#endif
+
 	/*
 	 * Starting with pg12, wal senders aren't part of MaxConnections anymore
 	 * and have to be accounted for.
