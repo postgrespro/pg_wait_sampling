@@ -350,12 +350,7 @@ collector_main(Datum main_arg)
 	pqsignal(SIGTERM, handle_sigterm);
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
 	BackgroundWorkerUnblockSignals();
-
-#if PG_VERSION_NUM >= 110000
-	InitPostgres(NULL, InvalidOid, NULL, InvalidOid, NULL, false);
-#else
-	InitPostgres(NULL, InvalidOid, NULL, InvalidOid, NULL);
-#endif
+	InitPostgresCompat(NULL, InvalidOid, NULL, InvalidOid, false, false, NULL);
 	SetProcessingMode(NormalProcessing);
 
 	/* Make pg_wait_sampling recognisable in pg_stat_activity */
