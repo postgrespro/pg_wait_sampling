@@ -1,5 +1,7 @@
 #include "postgres.h"
+
 #include "access/tupdesc.h"
+#include "miscadmin.h"
 
 #include "pg_wait_sampling.h"
 
@@ -31,5 +33,23 @@ CreateTemplateTupleDescCompat(int nattrs, bool hasoid)
 	return CreateTemplateTupleDesc(nattrs);
 #else
 	return CreateTemplateTupleDesc(nattrs, hasoid);
+#endif
+}
+
+inline void
+InitPostgresCompat(const char *in_dbname, Oid dboid,
+				   const char *username, Oid useroid,
+				   bool load_session_libraries,
+				   bool override_allow_connections,
+				   char *out_dbname)
+{
+#if PG_VERSION_NUM >= 150000
+	InitPostgres(in_dbname, dboid, username, useroid, load_session_libraries,
+				 override_allow_connections, out_dbname);
+#elif PG_VERSION_NUM >= 110000
+	InitPostgres(in_dbname, dboid, username, useroid, out_dbname,
+				 override_allow_connections);
+#else
+	InitPostgres(in_dbname, dboid, username, useroid, out_dbname);
 #endif
 }

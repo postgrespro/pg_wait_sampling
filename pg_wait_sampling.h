@@ -88,5 +88,10 @@ extern shm_mq_result shm_mq_send_compat(shm_mq_handle *mqh, Size nbytes,
 										const void *data, bool nowait,
 										bool force_flush);
 extern TupleDesc CreateTemplateTupleDescCompat(int nattrs, bool hasoid);
+extern void InitPostgresCompat(const char *in_dbname, Oid dboid,
+							   const char *username, Oid useroid,
+							   bool load_session_libraries,
+							   bool override_allow_connections,
+							   char *out_dbname);
 
 #endif
