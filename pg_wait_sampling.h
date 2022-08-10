@@ -81,7 +81,7 @@ extern void init_lock_tag(LOCKTAG *tag, uint32 lock);
 /* collector.c */
 extern void register_wait_collector(void);
 extern void alloc_history(History *, int);
-extern void collector_main(Datum main_arg);
+extern PGDLLEXPORT void collector_main(Datum main_arg);
 
 extern void shm_mq_detach_compat(shm_mq_handle *mqh, shm_mq *mq);
 extern shm_mq_result shm_mq_send_compat(shm_mq_handle *mqh, Size nbytes,
