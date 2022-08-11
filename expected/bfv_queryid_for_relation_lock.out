@@ -1,42 +1,27 @@
 Parsed test spec with 2 sessions
 
-starting permutation: s1_acquire_lock_on_relation s2_wait_on_relation_lock s1_wait_one_sec s1_release_relation_lock s2_expose_wait_on_lock_in_profile
-pg_wait_sampling_reset_profile
+starting permutation: s1_acquire_lock_on_relation s2_wait_on_relation_lock s1_expose_query_from_profile s1_release_relation_lock
+step s1_acquire_lock_on_relation: 
+		begin;
+		lock pg_class in access exclusive mode;
+
+step s2_wait_on_relation_lock: 
+		begin;
+		lock pg_class in access share mode;
+		rollback;
+ <waiting ...>
+step s1_expose_query_from_profile: 
+		select waiting_on_relation_lock_query(pid)
+		from pg_stat_activity
+		where backend_type = 'client backend'
+		  and wait_event_type = 'Lock';
+
+waiting_on_relation_lock_query
 ------------------------------
                               
 (1 row)
 
-step s1_acquire_lock_on_relation: 
-		BEGIN;
-		LOCK pg_class IN ACCESS EXCLUSIVE MODE;
-
-step s2_wait_on_relation_lock: 
-		BEGIN;
-		LOCK pg_class IN ACCESS SHARE MODE;
-		ROLLBACK;
- <waiting ...>
-step s1_wait_one_sec: 
-		SELECT pg_sleep(1);
-
-pg_sleep
---------
-        
-(1 row)
-
 step s1_release_relation_lock: 
-		ROLLBACK;
+		rollback;
 
 step s2_wait_on_relation_lock: <... completed>
-step s2_expose_wait_on_lock_in_profile: 
-		SELECT query
-		FROM pg_wait_sampling_profile pgws
-		LEFT JOIN pg_stat_statements pgss using (queryid)
-		WHERE pid = pg_backend_pid()
-		  AND event_type = 'Lock' AND event = 'relation'
-		  AND count between 90 and 110;
-
-query
------
-     
-(1 row)
-
