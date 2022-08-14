@@ -21,6 +21,12 @@ RUN if [ "${CHECK_CODE}" = "false" ] ; then \
 		--repository http://dl-cdn.alpinelinux.org/alpine/v3.6/main; \
 	fi
 
+RUN if [ "${CHECK_CODE}" = "false" ] && { [ "${PG_VERSION}" = "12" ] || [ "${PG_VERSION}" = "13" ]; } ; then \
+	apk --no-cache add git flex bison perl \
+		--repository http://dl-cdn.alpinelinux.org/alpine/v3.6/community \
+		--repository http://dl-cdn.alpinelinux.org/alpine/v3.6/main; \
+	fi
+
 RUN mkdir -p ${PGDATA} && \
 	mkdir /pg/src && \
 	chown postgres:postgres ${PGDATA} && \
