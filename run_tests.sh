@@ -8,6 +8,7 @@
 
 set -eux
 
+echo PG_VERSION=$PG_VERSION
 echo CHECK_CODE=$CHECK_CODE
 
 status=0
@@ -37,13 +38,17 @@ fi
 
 # compile and setup tools for isolation tests for pg12 and pg13
 if [ "$PG_VERSION" = "12" ] || [ "$PG_VERSION" = "13" ] ; then
-	git clone https://github.com/postgres/postgres.git -b $(pg_config --version | awk '{print $2}' | sed -r 's/\./_/' | sed -e 's/^/REL_/') --depth=1
+	PWD_SAVED=`pwd`
+	git clone https://github.com/postgres/postgres.git \
+		-b $(pg_config --version | awk '{print $2}' | sed -r 's/\./_/' | sed -e 's/^/REL_/') \
+		--depth=1
 	cd postgres
 	./configure --prefix=/usr/local --without-readline --without-zlib
 	cd src/test/isolation
 	make install
 	mkdir $(dirname $(pg_config --pgxs))/../../src/test/isolation
 	cp isolationtester pg_isolation_regress -t $(dirname $(pg_config --pgxs))/../../src/test/isolation
+	cd $PWD_SAVED
 fi
 
 # don't forget to "make clean"
