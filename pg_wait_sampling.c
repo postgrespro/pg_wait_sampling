@@ -594,13 +594,11 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
 	LockAcquire(&queueTag, ExclusiveLock, false, false);
 
-	/* Ensure collector has processed previous request */
 	init_lock_tag(&collectorTag, PGWS_COLLECTOR_LOCK);
 	LockAcquire(&collectorTag, ExclusiveLock, false, false);
-	LockRelease(&collectorTag, ExclusiveLock, false);
-
 	recv_mq = shm_mq_create(collector_mq, COLLECTOR_QUEUE_SIZE);
 	collector_hdr->request = request;
+	LockRelease(&collectorTag, ExclusiveLock, false);
 
 	if (!collector_hdr->latch)
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
@@ -770,9 +768,9 @@ pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 
 	init_lock_tag(&tagCollector, PGWS_COLLECTOR_LOCK);
 	LockAcquire(&tagCollector, ExclusiveLock, false, false);
+	collector_hdr->request = PROFILE_RESET;
 	LockRelease(&tagCollector, ExclusiveLock, false);
 
-	collector_hdr->request = PROFILE_RESET;
 	SetLatch(collector_hdr->latch);
 
 	LockRelease(&tag, ExclusiveLock, false);

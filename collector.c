@@ -441,11 +441,12 @@ collector_main(Datum main_arg)
 		if (collector_hdr->request != NO_REQUEST)
 		{
 			LOCKTAG		tag;
-			SHMRequest	request = collector_hdr->request;
+			SHMRequest	request;
 
 			init_lock_tag(&tag, PGWS_COLLECTOR_LOCK);
 
 			LockAcquire(&tag, ExclusiveLock, false, false);
+			request = collector_hdr->request;
 			collector_hdr->request = NO_REQUEST;
 
 			if (request == HISTORY_REQUEST || request == PROFILE_REQUEST)
