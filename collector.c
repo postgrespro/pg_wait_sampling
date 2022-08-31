@@ -26,6 +26,7 @@
 #include "utils/resowner.h"
 #include "pgstat.h"
 
+#include "compat.h"
 #include "pg_wait_sampling.h"
 
 static volatile sig_atomic_t shutdown_requested = false;

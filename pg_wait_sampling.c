@@ -34,6 +34,7 @@
 #include "utils/memutils.h" /* TopMemoryContext.  Actually for PG 9.6 only,
 							 * but there should be no harm for others. */
 
+#include "compat.h"
 #include "pg_wait_sampling.h"
 
 PG_MODULE_MAGIC;
