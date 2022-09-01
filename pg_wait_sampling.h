@@ -71,16 +71,13 @@ typedef struct
 } CollectorShmqHeader;
 
 /* pg_wait_sampling.c */
-extern void check_shmem(void);
-extern CollectorShmqHeader *collector_hdr;
-extern shm_mq			   *collector_mq;
-extern uint64			   *proc_queryids;
-extern void read_current_wait(PGPROC *proc, HistoryItem *item);
-extern void init_lock_tag(LOCKTAG *tag, uint32 lock);
+extern CollectorShmqHeader *pgws_collector_hdr;
+extern shm_mq			   *pgws_collector_mq;
+extern uint64			   *pgws_proc_queryids;
+extern void pgws_init_lock_tag(LOCKTAG *tag, uint32 lock);
 
 /* collector.c */
-extern void register_wait_collector(void);
-extern void alloc_history(History *, int);
-extern PGDLLEXPORT void collector_main(Datum main_arg);
+extern void pgws_register_wait_collector(void);
+extern PGDLLEXPORT void pgws_collector_main(Datum main_arg);
 
 #endif
