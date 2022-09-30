@@ -17,6 +17,10 @@
 #include "miscadmin.h"
 #include "optimizer/planner.h"
 #include "pgstat.h"
+#include "postmaster/autovacuum.h"
+#if PG_VERSION_NUM >= 120000
+#include "replication/walsender.h"
+#endif
 #include "storage/ipc.h"
 #include "storage/pg_shmem.h"
 #include "storage/procarray.h"
@@ -30,31 +34,32 @@
 #include "utils/memutils.h" /* TopMemoryContext.  Actually for PG 9.6 only,
 							 * but there should be no harm for others. */
 
+#include "compat.h"
 #include "pg_wait_sampling.h"
 
 PG_MODULE_MAGIC;
 
 void		_PG_init(void);
-void		_PG_fini(void);
 
-/* Global variables */
-bool					shmem_initialized = false;
+static bool shmem_initialized = false;
 
 /* Hooks */
 static ExecutorEnd_hook_type	prev_ExecutorEnd = NULL;
 static planner_hook_type		planner_hook_next = NULL;
 
-/* Shared memory variables */
-shm_toc				   *toc = NULL;
-shm_mq				   *collector_mq = NULL;
-uint64				   *proc_queryids = NULL;
-CollectorShmqHeader	   *collector_hdr = NULL;
+/* Pointers to shared memory objects */
+shm_mq				   *pgws_collector_mq = NULL;
+uint64				   *pgws_proc_queryids = NULL;
+CollectorShmqHeader	   *pgws_collector_hdr = NULL;
 
 /* Receiver (backend) local shm_mq pointers and lock */
-shm_mq		   *recv_mq = NULL;
-shm_mq_handle  *recv_mqh = NULL;
-LOCKTAG			queueTag;
+static shm_mq *recv_mq = NULL;
+static shm_mq_handle *recv_mqh = NULL;
+static LOCKTAG queueTag;
 
+#if PG_VERSION_NUM >= 150000
+static shmem_request_hook_type prev_shmem_request_hook = NULL;
+#endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static PGPROC * search_proc(int backendPid);
 static PlannedStmt *pgws_planner_hook(Query *parse,
@@ -66,20 +71,64 @@ static void pgws_ExecutorEnd(QueryDesc *queryDesc);
 
 /*
  * Calculate max processes count.
- * Look at InitProcGlobal (proc.c) and TotalProcs variable in it
- * if something wrong here.
+ *
+ * The value has to be in sync with ProcGlobal->allProcCount, initialized in
+ * InitProcGlobal() (proc.c).
+ *
  */
 static int
 get_max_procs_count(void)
 {
 	int count = 0;
 
-	/* MyProcs, including autovacuum workers and launcher */
+	/* First, add the maximum number of backends (MaxBackends). */
+#if PG_VERSION_NUM >= 150000
+	/*
+	 * On pg15+, we can directly access the MaxBackends variable, as it will
+	 * have already been initialized in shmem_request_hook.
+	 */
+	Assert(MaxBackends > 0);
 	count += MaxBackends;
-	/* AuxiliaryProcs */
+#else
+	/*
+	 * On older versions, we need to compute MaxBackends: bgworkers, autovacuum
+	 * workers and launcher.
+	 * This has to be in sync with the value computed in
+	 * InitializeMaxBackends() (postinit.c)
+	 *
+	 * Note that we need to calculate the value as it won't initialized when we
+	 * need it during _PG_init().
+	 *
+	 * Note also that the value returned during _PG_init() might be different
+	 * from the value returned later if some third-party modules change one of
+	 * the underlying GUC.  This isn't ideal but can't lead to a crash, as the
+	 * value returned during _PG_init() is only used to ask for additional
+	 * shmem with RequestAddinShmemSpace(), and postgres has an extra 100kB of
+	 * shmem to compensate some small unaccounted usage.  So if the value later
+	 * changes, we will allocate and initialize the new (and correct) memory
+	 * size, which will either work thanks for the extra 100kB of shmem, of
+	 * fail (and prevent postgres startup) due to an out of shared memory
+	 * error.
+	 */
+	count += MaxConnections + autovacuum_max_workers + 1
+			+ max_worker_processes;
+
+#if PG_VERSION_NUM >= 140000 && defined(PGPRO_EE)
+	count += MaxATX;
+#endif
+
+	/*
+	 * Starting with pg12, wal senders aren't part of MaxConnections anymore
+	 * and have to be accounted for.
+	 */
+#if PG_VERSION_NUM >= 120000
+	count += max_wal_senders;
+#endif		/* pg 12+ */
+#endif		/* pg 15- */
+	/* End of MaxBackends calculation. */
+
+	/* Add AuxiliaryProcs */
 	count += NUM_AUXILIARY_PROCS;
-	/* Prepared xacts */
-	count += max_prepared_xacts;
 
 	return count;
 }
@@ -167,63 +216,63 @@ setup_gucs()
 		if (!strcmp(name, "pg_wait_sampling.history_size"))
 		{
 			history_size_found = true;
-			var->integer.variable = &collector_hdr->historySize;
-			collector_hdr->historySize = 5000;
+			var->integer.variable = &pgws_collector_hdr->historySize;
+			pgws_collector_hdr->historySize = 5000;
 		}
 		else if (!strcmp(name, "pg_wait_sampling.history_period"))
 		{
 			history_period_found = true;
-			var->integer.variable = &collector_hdr->historyPeriod;
-			collector_hdr->historyPeriod = 10;
+			var->integer.variable = &pgws_collector_hdr->historyPeriod;
+			pgws_collector_hdr->historyPeriod = 10;
 		}
 		else if (!strcmp(name, "pg_wait_sampling.profile_period"))
 		{
 			profile_period_found = true;
-			var->integer.variable = &collector_hdr->profilePeriod;
-			collector_hdr->profilePeriod = 10;
+			var->integer.variable = &pgws_collector_hdr->profilePeriod;
+			pgws_collector_hdr->profilePeriod = 10;
 		}
 		else if (!strcmp(name, "pg_wait_sampling.profile_pid"))
 		{
 			profile_pid_found = true;
-			var->_bool.variable = &collector_hdr->profilePid;
-			collector_hdr->profilePid = true;
+			var->_bool.variable = &pgws_collector_hdr->profilePid;
+			pgws_collector_hdr->profilePid = true;
 		}
 		else if (!strcmp(name, "pg_wait_sampling.profile_queries"))
 		{
 			profile_queries_found = true;
-			var->_bool.variable = &collector_hdr->profileQueries;
-			collector_hdr->profileQueries = true;
+			var->_bool.variable = &pgws_collector_hdr->profileQueries;
+			pgws_collector_hdr->profileQueries = true;
 		}
 	}
 
 	if (!history_size_found)
 		DefineCustomIntVariable("pg_wait_sampling.history_size",
 				"Sets size of waits history.", NULL,
-				&collector_hdr->historySize, 5000, 100, INT_MAX,
+				&pgws_collector_hdr->historySize, 5000, 100, INT_MAX,
 				PGC_SUSET, 0, shmem_int_guc_check_hook, NULL, NULL);
 
 	if (!history_period_found)
 		DefineCustomIntVariable("pg_wait_sampling.history_period",
 				"Sets period of waits history sampling.", NULL,
-				&collector_hdr->historyPeriod, 10, 1, INT_MAX,
+				&pgws_collector_hdr->historyPeriod, 10, 1, INT_MAX,
 				PGC_SUSET, 0, shmem_int_guc_check_hook, NULL, NULL);
 
 	if (!profile_period_found)
 		DefineCustomIntVariable("pg_wait_sampling.profile_period",
 				"Sets period of waits profile sampling.", NULL,
-				&collector_hdr->profilePeriod, 10, 1, INT_MAX,
+				&pgws_collector_hdr->profilePeriod, 10, 1, INT_MAX,
 				PGC_SUSET, 0, shmem_int_guc_check_hook, NULL, NULL);
 
 	if (!profile_pid_found)
 		DefineCustomBoolVariable("pg_wait_sampling.profile_pid",
 				"Sets whether profile should be collected per pid.", NULL,
-				&collector_hdr->profilePid, true,
+				&pgws_collector_hdr->profilePid, true,
 				PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
 
 	if (!profile_queries_found)
 		DefineCustomBoolVariable("pg_wait_sampling.profile_queries",
 				"Sets whether profile should be collected per query.", NULL,
-				&collector_hdr->profileQueries, true,
+				&pgws_collector_hdr->profileQueries, true,
 				PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
 
 	if (history_size_found
@@ -236,15 +285,33 @@ setup_gucs()
 	}
 }
 
+#if PG_VERSION_NUM >= 150000
+/*
+ * shmem_request hook: request additional shared memory resources.
+ *
+ * If you change code here, don't forget to also report the modifications in
+ * _PG_init() for pg14 and below.
+ */
+static void
+pgws_shmem_request(void)
+{
+	if (prev_shmem_request_hook)
+		prev_shmem_request_hook();
+
+	RequestAddinShmemSpace(pgws_shmem_size());
+}
+#endif
+
 /*
  * Distribute shared memory.
  */
 static void
 pgws_shmem_startup(void)
 {
-	bool	found;
-	Size	segsize = pgws_shmem_size();
-	void   *pgws;
+	bool		found;
+	Size		segsize = pgws_shmem_size();
+	void	   *pgws;
+	shm_toc	   *toc;
 
 	pgws = ShmemInitStruct("pg_wait_sampling", segsize, &found);
 
@@ -252,14 +319,14 @@ pgws_shmem_startup(void)
 	{
 		toc = shm_toc_create(PG_WAIT_SAMPLING_MAGIC, pgws, segsize);
 
-		collector_hdr = shm_toc_allocate(toc, sizeof(CollectorShmqHeader));
-		shm_toc_insert(toc, 0, collector_hdr);
-		collector_mq = shm_toc_allocate(toc, COLLECTOR_QUEUE_SIZE);
-		shm_toc_insert(toc, 1, collector_mq);
-		proc_queryids = shm_toc_allocate(toc,
+		pgws_collector_hdr = shm_toc_allocate(toc, sizeof(CollectorShmqHeader));
+		shm_toc_insert(toc, 0, pgws_collector_hdr);
+		pgws_collector_mq = shm_toc_allocate(toc, COLLECTOR_QUEUE_SIZE);
+		shm_toc_insert(toc, 1, pgws_collector_mq);
+		pgws_proc_queryids = shm_toc_allocate(toc,
 									sizeof(uint64) * get_max_procs_count());
-		shm_toc_insert(toc, 2, proc_queryids);
-		MemSet(proc_queryids, 0, sizeof(uint64) * get_max_procs_count());
+		shm_toc_insert(toc, 2, pgws_proc_queryids);
+		MemSet(pgws_proc_queryids, 0, sizeof(uint64) * get_max_procs_count());
 
 		/* Initialize GUC variables in shared memory */
 		setup_gucs();
@@ -269,13 +336,13 @@ pgws_shmem_startup(void)
 		toc = shm_toc_attach(PG_WAIT_SAMPLING_MAGIC, pgws);
 
 #if PG_VERSION_NUM >= 100000
-		collector_hdr = shm_toc_lookup(toc, 0, false);
-		collector_mq = shm_toc_lookup(toc, 1, false);
-		proc_queryids = shm_toc_lookup(toc, 2, false);
+		pgws_collector_hdr = shm_toc_lookup(toc, 0, false);
+		pgws_collector_mq = shm_toc_lookup(toc, 1, false);
+		pgws_proc_queryids = shm_toc_lookup(toc, 2, false);
 #else
-		collector_hdr = shm_toc_lookup(toc, 0);
-		collector_mq = shm_toc_lookup(toc, 1);
-		proc_queryids = shm_toc_lookup(toc, 2);
+		pgws_collector_hdr = shm_toc_lookup(toc, 0);
+		pgws_collector_mq = shm_toc_lookup(toc, 1);
+		pgws_proc_queryids = shm_toc_lookup(toc, 2);
 #endif
 	}
 
@@ -288,7 +355,7 @@ pgws_shmem_startup(void)
 /*
  * Check shared memory is initialized. Report an error otherwise.
  */
-void
+static void
 check_shmem(void)
 {
 	if (!shmem_initialized)
@@ -315,34 +382,33 @@ _PG_init(void)
 	if (!process_shared_preload_libraries_in_progress)
 		return;
 
+#if PG_VERSION_NUM < 150000
 	/*
 	 * Request additional shared resources.  (These are no-ops if we're not in
 	 * the postmaster process.)  We'll allocate or attach to the shared
 	 * resources in pgws_shmem_startup().
+	 *
+	 * If you change code here, don't forget to also report the modifications
+	 * in pgsp_shmem_request() for pg15 and later.
 	 */
 	RequestAddinShmemSpace(pgws_shmem_size());
+#endif
 
-	register_wait_collector();
+	pgws_register_wait_collector();
 
 	/*
 	 * Install hooks.
 	 */
+#if PG_VERSION_NUM >= 150000
+	prev_shmem_request_hook = shmem_request_hook;
+	shmem_request_hook		= pgws_shmem_request;
+#endif
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook		= pgws_shmem_startup;
 	planner_hook_next		= planner_hook;
 	planner_hook			= pgws_planner_hook;
 	prev_ExecutorEnd		= ExecutorEnd_hook;
 	ExecutorEnd_hook		= pgws_ExecutorEnd;
-}
-
-/*
- * Module unload callback
- */
-void
-_PG_fini(void)
-{
-	/* Uninstall hooks. */
-	shmem_startup_hook = prev_shmem_startup_hook;
 }
 
 /*
@@ -423,7 +489,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			item = &params->items[0];
 			item->pid = proc->pid;
 			item->wait_event_info = proc->wait_event_info;
-			item->queryId = proc_queryids[proc - ProcGlobal->allProcs];
+			item->queryId = pgws_proc_queryids[proc - ProcGlobal->allProcs];
 			funcctx->max_calls = 1;
 		}
 		else
@@ -441,7 +507,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 				{
 					params->items[j].pid = proc->pid;
 					params->items[j].wait_event_info = proc->wait_event_info;
-					params->items[j].queryId = proc_queryids[i];
+					params->items[j].queryId = pgws_proc_queryids[i];
 					j++;
 				}
 			}
@@ -502,7 +568,7 @@ typedef struct
 } Profile;
 
 void
-init_lock_tag(LOCKTAG *tag, uint32 lock)
+pgws_init_lock_tag(LOCKTAG *tag, uint32 lock)
 {
 	tag->locktag_field1 = PG_WAIT_SAMPLING_MAGIC;
 	tag->locktag_field2 = lock;
@@ -525,22 +591,20 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	MemoryContext	oldctx;
 
 	/* Ensure nobody else trying to send request to queue */
-	init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
+	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
 	LockAcquire(&queueTag, ExclusiveLock, false, false);
 
-	/* Ensure collector has processed previous request */
-	init_lock_tag(&collectorTag, PGWS_COLLECTOR_LOCK);
+	pgws_init_lock_tag(&collectorTag, PGWS_COLLECTOR_LOCK);
 	LockAcquire(&collectorTag, ExclusiveLock, false, false);
+	recv_mq = shm_mq_create(pgws_collector_mq, COLLECTOR_QUEUE_SIZE);
+	pgws_collector_hdr->request = request;
 	LockRelease(&collectorTag, ExclusiveLock, false);
 
-	recv_mq = shm_mq_create(collector_mq, COLLECTOR_QUEUE_SIZE);
-	collector_hdr->request = request;
-
-	if (!collector_hdr->latch)
+	if (!pgws_collector_hdr->latch)
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
 						errmsg("pg_wait_sampling collector wasn't started")));
 
-	SetLatch(collector_hdr->latch);
+	SetLatch(pgws_collector_hdr->latch);
 
 	shm_mq_set_receiver(recv_mq, MyProc);
 
@@ -671,7 +735,7 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		else
 			nulls[2] = true;
 
-		if (collector_hdr->profileQueries)
+		if (pgws_collector_hdr->profileQueries)
 			values[3] = Int64GetDatumFast(item->queryId);
 		else
 			values[3] = (Datum) 0;
@@ -693,23 +757,22 @@ PG_FUNCTION_INFO_V1(pg_wait_sampling_reset_profile);
 Datum
 pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 {
-	LOCKTAG		tag;
-	LOCKTAG		tagCollector;
+	LOCKTAG		collectorTag;
 
 	check_shmem();
 
-	init_lock_tag(&tag, PGWS_QUEUE_LOCK);
+	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
 
-	LockAcquire(&tag, ExclusiveLock, false, false);
+	LockAcquire(&queueTag, ExclusiveLock, false, false);
 
-	init_lock_tag(&tagCollector, PGWS_COLLECTOR_LOCK);
-	LockAcquire(&tagCollector, ExclusiveLock, false, false);
-	LockRelease(&tagCollector, ExclusiveLock, false);
+	pgws_init_lock_tag(&collectorTag, PGWS_COLLECTOR_LOCK);
+	LockAcquire(&collectorTag, ExclusiveLock, false, false);
+	pgws_collector_hdr->request = PROFILE_RESET;
+	LockRelease(&collectorTag, ExclusiveLock, false);
 
-	collector_hdr->request = PROFILE_RESET;
-	SetLatch(collector_hdr->latch);
+	SetLatch(pgws_collector_hdr->latch);
 
-	LockRelease(&tag, ExclusiveLock, false);
+	LockRelease(&queueTag, ExclusiveLock, false);
 
 	PG_RETURN_VOID();
 }
@@ -829,8 +892,8 @@ pgws_planner_hook(Query *parse,
 		StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint32),
 				"queryId size is not uint32");
 #endif
-		if (!proc_queryids[i])
-			proc_queryids[i] = parse->queryId;
+		if (!pgws_proc_queryids[i])
+			pgws_proc_queryids[i] = parse->queryId;
 
 	}
 
@@ -856,7 +919,7 @@ static void
 pgws_ExecutorEnd(QueryDesc *queryDesc)
 {
 	if (MyProc)
-		proc_queryids[MyProc - ProcGlobal->allProcs] = UINT64CONST(0);
+		pgws_proc_queryids[MyProc - ProcGlobal->allProcs] = UINT64CONST(0);
 
 	if (prev_ExecutorEnd)
 		prev_ExecutorEnd(queryDesc);
