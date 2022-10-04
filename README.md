@@ -53,6 +53,12 @@ and supports PostgreSQL 9.6+.
 Installation
 ------------
 
+Pre-built `pg_wait_sampling` packages are provided in official PostgreSQL
+repository: https://download.postgresql.org/pub/repos/
+
+Manual build
+------------
+
 `pg_wait_sampling` is PostgreSQL extension which requires PostgreSQL 9.6 or
 higher. Before build and install you should ensure following:
 
