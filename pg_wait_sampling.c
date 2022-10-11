@@ -89,7 +89,7 @@ get_max_procs_count(void)
 	 */
 	Assert(MaxBackends > 0);
 	count += MaxBackends;
-#else
+#elif PG_VERSION_NUM >= 120000
 	/*
 	 * On older versions, we need to compute MaxBackends: bgworkers, autovacuum
 	 * workers and launcher.
@@ -110,22 +110,21 @@ get_max_procs_count(void)
 	 * fail (and prevent postgres startup) due to an out of shared memory
 	 * error.
 	 */
-	count += MaxConnections + autovacuum_max_workers + 1
-			+ max_worker_processes;
+	count += MaxConnections + autovacuum_max_workers + 1 +
+		max_worker_processes + max_wal_senders;
+#else		/* pg 12- */
+	/*
+	 * On versions before pg12, wal senders are the part of MaxConnections
+	 * and doesn't have to be accounted for.
+	 */
+	count += MaxConnections + autovacuum_max_workers + 1 +
+		max_worker_processes;
+#endif		/* pg 15- */
+	/* End of MaxBackends calculation. */
 
 #if PG_VERSION_NUM >= 140000 && defined(PGPRO_EE)
 	count += MaxATX;
 #endif
-
-	/*
-	 * Starting with pg12, wal senders aren't part of MaxConnections anymore
-	 * and have to be accounted for.
-	 */
-#if PG_VERSION_NUM >= 120000
-	count += max_wal_senders;
-#endif		/* pg 12+ */
-#endif		/* pg 15- */
-	/* End of MaxBackends calculation. */
 
 	/* Add AuxiliaryProcs */
 	count += NUM_AUXILIARY_PROCS;
