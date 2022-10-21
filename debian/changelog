@@ -1,3 +1,9 @@
+pg-wait-sampling (1.1.4-2) unstable; urgency=medium
+
+  * Team upload for PostgreSQL 15.
+
+ -- Christoph Berg <myon@debian.org>  Fri, 21 Oct 2022 11:08:29 +0200
+
 pg-wait-sampling (1.1.4-1) unstable; urgency=medium
 
   * Team upload.
