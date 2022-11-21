@@ -546,7 +546,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		else
 			nulls[2] = true;
 
-		values[3] = Int64GetDatumFast(item->queryId);
+		values[3] = UInt64GetDatum(item->queryId);
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
@@ -732,11 +732,11 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 			nulls[2] = true;
 
 		if (pgws_collector_hdr->profileQueries)
-			values[3] = Int64GetDatumFast(item->queryId);
+			values[3] = UInt64GetDatum(item->queryId);
 		else
 			values[3] = (Datum) 0;
 
-		values[4] = Int64GetDatumFast(item->count);
+		values[4] = UInt64GetDatum(item->count);
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
@@ -848,7 +848,7 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		else
 			nulls[3] = true;
 
-		values[4] = Int64GetDatumFast(item->queryId);
+		values[4] = UInt64GetDatum(item->queryId);
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		history->index++;
