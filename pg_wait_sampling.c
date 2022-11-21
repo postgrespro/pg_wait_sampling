@@ -451,7 +451,6 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 	{
 		MemoryContext		oldcontext;
 		TupleDesc			tupdesc;
-		WaitCurrentContext 	*params;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 
