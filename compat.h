@@ -15,6 +15,7 @@
 #include "access/tupdesc.h"
 #include "miscadmin.h"
 #include "storage/shm_mq.h"
+#include "utils/guc_tables.h"
 
 static inline TupleDesc
 CreateTemplateTupleDescCompat(int nattrs, bool hasoid)
@@ -62,6 +63,20 @@ InitPostgresCompat(const char *in_dbname, Oid dboid,
 				 override_allow_connections);
 #else
 	InitPostgres(in_dbname, dboid, username, useroid, out_dbname);
+#endif
+}
+
+static inline void
+get_guc_variables_compat(struct config_generic ***vars, int *num_vars)
+{
+	Assert(vars != NULL);
+	Assert(num_vars != NULL);
+
+#if PG_VERSION_NUM >= 160000
+	*vars = get_guc_variables(num_vars);
+#else
+	*vars = get_guc_variables();
+	*num_vars = GetNumConfigOptions();
 #endif
 }
 
