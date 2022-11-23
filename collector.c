@@ -470,7 +470,7 @@ pgws_collector_main(Datum main_arg)
 								send_profile(profile_hash, mqh);
 								break;
 							default:
-								AssertState(false);
+								Assert(false);
 						}
 						break;
 					case SHM_MQ_DETACHED:
@@ -480,7 +480,7 @@ pgws_collector_main(Datum main_arg)
 										"detached")));
 						break;
 					default:
-						AssertState(false);
+						Assert(false);
 				}
 				shm_mq_detach_compat(mqh, pgws_collector_mq);
 			}
