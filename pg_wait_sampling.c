@@ -198,8 +198,7 @@ setup_gucs()
 				profile_pid_found = false,
 				profile_queries_found = false;
 
-	guc_vars = get_guc_variables();
-	numOpts = GetNumConfigOptions();
+	get_guc_variables_compat(&guc_vars, &numOpts);
 
 	for (i = 0; i < numOpts; i++)
 	{
@@ -452,7 +451,6 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 	{
 		MemoryContext		oldcontext;
 		TupleDesc			tupdesc;
-		WaitCurrentContext 	*params;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 
