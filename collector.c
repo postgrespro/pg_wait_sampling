@@ -5,110 +5,34 @@
  * Copyright (c) 2015-2016, Postgres Professional
  *
  * IDENTIFICATION
- *	  contrib/pg_wait_sampling/pg_wait_sampling.c
+ *	  contrib/pg_wait_sampling/collector.c
  */
 #include "postgres.h"
 
-#include "catalog/pg_type.h"
 #if PG_VERSION_NUM >= 130000
 #include "common/hashfn.h"
 #endif
-#include "funcapi.h"
-#include "miscadmin.h"
-#include "postmaster/bgworker.h"
-#include "storage/ipc.h"
-#include "storage/procarray.h"
-#include "storage/procsignal.h"
-#include "storage/shm_mq.h"
-#include "storage/shm_toc.h"
-#include "storage/spin.h"
-#include "utils/memutils.h"
-#include "utils/resowner.h"
 #include "pgstat.h"
+#include "postmaster/bgworker.h"
+#if PG_VERSION_NUM >= 130000
+#include "postmaster/interrupt.h"
+#endif
+#include "storage/ipc.h"
+#include "storage/proc.h"
+#include "storage/procsignal.h"
+#include "utils/guc.h"
 
 #include "compat.h"
 #include "pg_wait_sampling.h"
 
+static const double USAGE_INIT = 1.0;
+static const double USAGE_INCREASE = 1.0;
+static const double USAGE_DECREASE_FACTOR = 0.99;
+static const int USAGE_DEALLOC_PERCENT = 5;
+static const int USAGE_DEALLOC_MIN_NUM = 10;
 static volatile sig_atomic_t shutdown_requested = false;
 
 static void handle_sigterm(SIGNAL_ARGS);
-
-/*
- * Register background worker for collecting waits history.
- */
-void
-pgws_register_wait_collector(void)
-{
-	BackgroundWorker worker;
-
-	/* Set up background worker parameters */
-	memset(&worker, 0, sizeof(worker));
-	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
-	worker.bgw_start_time = BgWorkerStart_ConsistentState;
-	worker.bgw_restart_time = 1;
-	worker.bgw_notify_pid = 0;
-	snprintf(worker.bgw_library_name, BGW_MAXLEN, "pg_wait_sampling");
-	snprintf(worker.bgw_function_name, BGW_MAXLEN, CppAsString(pgws_collector_main));
-	snprintf(worker.bgw_name, BGW_MAXLEN, "pg_wait_sampling collector");
-	worker.bgw_main_arg = (Datum) 0;
-	RegisterBackgroundWorker(&worker);
-}
-
-/*
- * Allocate memory for waits history.
- */
-static void
-alloc_history(History *observations, int count)
-{
-	observations->items = (HistoryItem *) palloc0(sizeof(HistoryItem) * count);
-	observations->index = 0;
-	observations->count = count;
-	observations->wraparound = false;
-}
-
-/*
- * Reallocate memory for changed number of history items.
- */
-static void
-realloc_history(History *observations, int count)
-{
-	HistoryItem	   *newitems;
-	int				copyCount,
-					i,
-					j;
-
-	/* Allocate new array for history */
-	newitems = (HistoryItem *) palloc0(sizeof(HistoryItem) * count);
-
-	/* Copy entries from old array to the new */
-	if (observations->wraparound)
-		copyCount = observations->count;
-	else
-		copyCount = observations->index;
-
-	copyCount = Min(copyCount, count);
-
-	i = 0;
-	if (observations->wraparound)
-		j = observations->index + 1;
-	else
-		j = 0;
-	while (i < copyCount)
-	{
-		if (j >= observations->count)
-			j = 0;
-		memcpy(&newitems[i], &observations->items[j], sizeof(HistoryItem));
-		i++;
-		j++;
-	}
-
-	/* Switch to new history array */
-	pfree(observations->items);
-	observations->items = newitems;
-	observations->index = copyCount;
-	observations->count = count;
-	observations->wraparound = false;
-}
 
 static void
 handle_sigterm(SIGNAL_ARGS)
@@ -121,185 +45,160 @@ handle_sigterm(SIGNAL_ARGS)
 }
 
 /*
- * Get next item of history with rotation.
+ * qsort comparator for sorting into increasing usage order
  */
-static HistoryItem *
-get_next_observation(History *observations)
+static int
+entry_cmp(const void *lhs, const void *rhs)
 {
-	HistoryItem *result;
+	double l_usage = (*(ProfileHashEntry *const *) lhs)->usage;
+	double r_usage = (*(ProfileHashEntry *const *) rhs)->usage;
 
-	if (observations->index >= observations->count)
-	{
-		observations->index = 0;
-		observations->wraparound = true;
-	}
-	result = &observations->items[observations->index];
-	observations->index++;
-	return result;
+	if (l_usage < r_usage)
+		return -1;
+	else if (l_usage > r_usage)
+		return +1;
+	else
+		return 0;
 }
 
 /*
- * Read current waits from backends and write them to history array
- * and/or profile hash.
+ * Deallocate least used entries in profile hashtable.
+ * Caller must hold an exclusive lock.
  */
 static void
-probe_waits(History *observations, HTAB *profile_hash,
-			bool write_history, bool write_profile, bool profile_pid)
+pgws_entry_dealloc()
 {
-	int			i,
-				newSize;
-	TimestampTz	ts = GetCurrentTimestamp();
+	HASH_SEQ_STATUS hash_seq;
+	ProfileHashEntry **entries;
+	ProfileHashEntry  *entry;
+	int			nvictims;
+	int			i;
 
-	/* Realloc waits history if needed */
-	newSize = pgws_collector_hdr->historySize;
-	if (observations->count != newSize)
-		realloc_history(observations, newSize);
+	/*
+	 * Sort entries by usage and deallocate USAGE_DEALLOC_PERCENT of them.
+	 * While we're scanning the table, apply the decay factor to the usage
+	 * values.
+	 */
+	entries =
+		palloc(hash_get_num_entries(pgws_hash) * sizeof(ProfileHashEntry *));
+
+	i = 0;
+	hash_seq_init(&hash_seq, pgws_hash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		entries[i++] = entry;
+		entry->usage *= USAGE_DECREASE_FACTOR;
+	}
+
+	qsort(entries, i, sizeof(ProfileHashEntry *), entry_cmp);
+
+	/*
+	 * We remove USAGE_DEALLOC_PERCENT number of entries or at least
+	 * USAGE_DEALLOC_MIN_NUM entries if full number of existing entries is not
+	 * less
+	 */
+	nvictims = Max(USAGE_DEALLOC_MIN_NUM, i * USAGE_DEALLOC_PERCENT / 100);
+	nvictims = Min(nvictims, i);
+
+	for (i = 0; i < nvictims; i++)
+	{
+		hash_search(pgws_hash, &entries[i]->key, HASH_REMOVE, NULL);
+	}
+
+	pfree(entries);
+}
+
+/*
+ * Read current waits from backends and write them to shared structures
+ */
+static void
+probe_waits(const bool write_history, const bool write_profile)
+{
+	if (write_profile)
+		LWLockAcquire(pgws_hash_lock, LW_EXCLUSIVE);
+	if (write_history)
+		LWLockAcquire(pgws_history_lock, LW_EXCLUSIVE);
 
 	/* Iterate PGPROCs under shared lock */
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
-	for (i = 0; i < ProcGlobal->allProcCount; i++)
+	for (int i = 0; i < ProcGlobal->allProcCount; i++)
 	{
-		HistoryItem		item,
-					   *observation;
-		PGPROC		   *proc = &ProcGlobal->allProcs[i];
+		PGPROC	   *proc = GetPGProcByNumber(i);
+		pgwsQueryId queryId = WhetherProfileQueryId ? pgws_proc_queryids[i] : 0;
+		int32 	 	wait_event_info = proc->wait_event_info,
+					pid = proc->pid;
 
-		if (proc->pid == 0)
+		// FIXME: zero pid actually doesn't indicate that process slot is freed.
+		// After process termination this field becomes unchanged and thereby
+		// stores the pid of previous process. The possible indicator of process
+		// termination might be a condition `proc->procLatch->owner_pid == 0`.
+		// Abother option is to use the lists of freed PGPROCs from ProcGlocal:
+		// freeProcs, walsenderFreeProcs, bgworkerFreeProcs and autovacFreeProcs
+		// to define indexes of all freed slots in allProcs.
+		// The most appropriate solution here is to iterate over ProcArray items
+		// to explicitly access to the all live PGPROC entries. This will
+		// require to build iterator object over protected procArray.
+		if (pid == 0)
 			continue;
 
-		if (proc->wait_event_info == 0)
+		// TODO: take into account the state without waiting as CPU time
+		if (wait_event_info == 0)
 			continue;
-
-		/* Collect next wait event sample */
-		item.pid = proc->pid;
-		item.wait_event_info = proc->wait_event_info;
-
-		if (pgws_collector_hdr->profileQueries)
-			item.queryId = pgws_proc_queryids[i];
-		else
-			item.queryId = 0;
-
-		item.ts = ts;
 
 		/* Write to the history if needed */
 		if (write_history)
 		{
-			observation = get_next_observation(observations);
-			*observation = item;
+			int index = pgws_history_ring->index % HistoryBufferSize;
+
+			pgws_history_ring->items[index] = (HistoryItem) {
+				pid, wait_event_info, queryId, GetCurrentTimestamp()
+			};
+			pgws_history_ring->index++;
 		}
 
 		/* Write to the profile if needed */
 		if (write_profile)
 		{
-			ProfileItem	   *profileItem;
-			bool			found;
+			ProfileHashKey		key;
+			ProfileHashEntry   *entry;
 
-			if (!profile_pid)
-				item.pid = 0;
+			/* Set up key for hashtable search */
+			key.pid = WhetherProfilePid ? pid : 0;
+			key.wait_event_info = wait_event_info;
+			key.queryid = queryId;
 
-			profileItem = (ProfileItem *) hash_search(profile_hash, &item, HASH_ENTER, &found);
-			if (found)
-				profileItem->count++;
+			/* Lookup the hash table entry with exclusive lock */
+			entry = (ProfileHashEntry *) hash_search(pgws_hash, &key, HASH_FIND,
+													 NULL);
+
+			/* Create new entry, if not present */
+			if (!entry)
+			{
+
+				/* Make space if needed */
+				while (hash_get_num_entries(pgws_hash) >= MaxProfileEntries)
+					pgws_entry_dealloc();
+
+				entry = (ProfileHashEntry *) hash_search(pgws_hash, &key,
+														 HASH_ENTER_NULL, NULL);
+				Assert(entry);
+
+				entry->counter = 1;
+				entry->usage = USAGE_INIT;
+			}
 			else
-				profileItem->count = 1;
+			{
+				entry->counter++;
+				entry->usage += USAGE_INCREASE;
+			}
 		}
 	}
 	LWLockRelease(ProcArrayLock);
-}
 
-/*
- * Send waits history to shared memory queue.
- */
-static void
-send_history(History *observations, shm_mq_handle *mqh)
-{
-	Size	count,
-			i;
-	shm_mq_result	mq_result;
-
-	if (observations->wraparound)
-		count = observations->count;
-	else
-		count = observations->index;
-
-	mq_result = shm_mq_send_compat(mqh, sizeof(count), &count, false, true);
-	if (mq_result == SHM_MQ_DETACHED)
-	{
-		ereport(WARNING,
-				(errmsg("pg_wait_sampling collector: "
-						"receiver of message queue has been detached")));
-		return;
-	}
-	for (i = 0; i < count; i++)
-	{
-		mq_result = shm_mq_send_compat(mqh,
-								sizeof(HistoryItem),
-								&observations->items[i],
-								false,
-								true);
-		if (mq_result == SHM_MQ_DETACHED)
-		{
-			ereport(WARNING,
-					(errmsg("pg_wait_sampling collector: "
-							"receiver of message queue has been detached")));
-			return;
-		}
-	}
-}
-
-/*
- * Send profile to shared memory queue.
- */
-static void
-send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
-{
-	HASH_SEQ_STATUS	scan_status;
-	ProfileItem	   *item;
-	Size			count = hash_get_num_entries(profile_hash);
-	shm_mq_result	mq_result;
-
-	mq_result = shm_mq_send_compat(mqh, sizeof(count), &count, false, true);
-	if (mq_result == SHM_MQ_DETACHED)
-	{
-		ereport(WARNING,
-				(errmsg("pg_wait_sampling collector: "
-						"receiver of message queue has been detached")));
-		return;
-	}
-	hash_seq_init(&scan_status, profile_hash);
-	while ((item = (ProfileItem *) hash_seq_search(&scan_status)) != NULL)
-	{
-		mq_result = shm_mq_send_compat(mqh, sizeof(ProfileItem), item, false,
-									   true);
-		if (mq_result == SHM_MQ_DETACHED)
-		{
-			hash_seq_term(&scan_status);
-			ereport(WARNING,
-					(errmsg("pg_wait_sampling collector: "
-							"receiver of message queue has been detached")));
-			return;
-		}
-	}
-}
-
-/*
- * Make hash table for wait profile.
- */
-static HTAB *
-make_profile_hash()
-{
-	HASHCTL hash_ctl;
-
-	hash_ctl.hash = tag_hash;
-	hash_ctl.hcxt = TopMemoryContext;
-
-	if (pgws_collector_hdr->profileQueries)
-		hash_ctl.keysize = offsetof(ProfileItem, count);
-	else
-		hash_ctl.keysize = offsetof(ProfileItem, queryId);
-
-	hash_ctl.entrysize = sizeof(ProfileItem);
-	return hash_create("Waits profile hash", 1024, &hash_ctl,
-					   HASH_FUNCTION | HASH_ELEM);
+	if (write_history)
+		LWLockRelease(pgws_history_lock);
+	if (write_profile)
+		LWLockRelease(pgws_hash_lock);
 }
 
 /*
@@ -323,10 +222,6 @@ millisecs_diff(TimestampTz tz1, TimestampTz tz2)
 void
 pgws_collector_main(Datum main_arg)
 {
-	HTAB		   *profile_hash = NULL;
-	History			observations;
-	MemoryContext	old_context,
-					collector_context;
 	TimestampTz		current_ts,
 					history_ts,
 					profile_ts;
@@ -350,22 +245,19 @@ pgws_collector_main(Datum main_arg)
 	 */
 	pqsignal(SIGTERM, handle_sigterm);
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	pqsignal(SIGHUP,
+#if PG_VERSION_NUM >= 130000
+			SignalHandlerForConfigReload
+#else
+			PostgresSigHupHandler
+#endif
+			);
 	BackgroundWorkerUnblockSignals();
 	InitPostgresCompat(NULL, InvalidOid, NULL, InvalidOid, false, false, NULL);
 	SetProcessingMode(NormalProcessing);
 
 	/* Make pg_wait_sampling recognisable in pg_stat_activity */
 	pgstat_report_appname("pg_wait_sampling collector");
-
-	profile_hash = make_profile_hash();
-	pgws_collector_hdr->latch = &MyProc->procLatch;
-
-	CurrentResourceOwner = ResourceOwnerCreate(NULL, "pg_wait_sampling collector");
-	collector_context = AllocSetContextCreate(TopMemoryContext,
-			"pg_wait_sampling context", ALLOCSET_DEFAULT_SIZES);
-	old_context = MemoryContextSwitchTo(collector_context);
-	alloc_history(&observations, pgws_collector_hdr->historySize);
-	MemoryContextSwitchTo(old_context);
 
 	ereport(LOG, (errmsg("pg_wait_sampling collector started")));
 
@@ -374,33 +266,45 @@ pgws_collector_main(Datum main_arg)
 
 	while (1)
 	{
-		int				rc;
-		shm_mq_handle  *mqh;
-		int64			history_diff,
-						profile_diff;
-		int				history_period,
-						profile_period;
-		bool			write_history,
-						write_profile;
+		int		rc;
+		int64	history_diff,
+				profile_diff;
+		bool	write_history,
+				write_profile;
+		int		history_timeout,
+				profile_timeout,
+				actual_timeout;
+
+		/* Clear any already-pending wakeups */
+		ResetLatch(MyLatch);
 
 		/* We need an explicit call for at least ProcSignal notifications. */
 		CHECK_FOR_INTERRUPTS();
 
-		/* Wait calculate time to next sample for history or profile */
-		current_ts = GetCurrentTimestamp();
+		/* Process any requests or signals received recently */
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
 
+		/* Shutdown if requested */
+		if (shutdown_requested)
+			break;
+
+		/* Calculate time for the next sample of history or profile */
+		current_ts = GetCurrentTimestamp();
 		history_diff = millisecs_diff(history_ts, current_ts);
 		profile_diff = millisecs_diff(profile_ts, current_ts);
-		history_period = pgws_collector_hdr->historyPeriod;
-		profile_period = pgws_collector_hdr->profilePeriod;
 
-		write_history = (history_diff >= (int64)history_period);
-		write_profile = (profile_diff >= (int64)profile_period);
-
+		/* Write profile or history */
+		write_history = HistoryPeriod &&
+			(history_diff >= (int64) HistoryPeriod);
+		write_profile = ProfilePeriod &&
+			(profile_diff >= (int64) ProfilePeriod);
 		if (write_history || write_profile)
 		{
-			probe_waits(&observations, profile_hash,
-						write_history, write_profile, pgws_collector_hdr->profilePid);
+			probe_waits(write_history, write_profile);
 
 			if (write_history)
 			{
@@ -415,86 +319,25 @@ pgws_collector_main(Datum main_arg)
 			}
 		}
 
-		/* Shutdown if requested */
-		if (shutdown_requested)
-			break;
-
-		/*
-		 * Wait until next sample time or request to do something through
-		 * shared memory.
-		 */
-#if PG_VERSION_NUM >= 100000
-		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-				Min(history_period - (int)history_diff,
-					profile_period - (int)profile_diff), PG_WAIT_EXTENSION);
-#else
-		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-				Min(history_period - (int)history_diff,
-					profile_period - (int)profile_diff));
-#endif
+		/* Wait until next sample time */
+		history_timeout = HistoryPeriod >= (int) history_diff ?
+			HistoryPeriod - (int) history_diff : 0;
+		profile_timeout = ProfilePeriod >= (int) profile_diff ?
+			ProfilePeriod - (int) profile_diff : 0;
+		if (ProfilePeriod && !HistoryPeriod)
+			actual_timeout = profile_timeout;
+		else if (HistoryPeriod && !ProfilePeriod)
+			actual_timeout = history_timeout;
+		else if (HistoryPeriod && ProfilePeriod)
+			actual_timeout = Min(history_timeout, profile_timeout);
+		rc = WaitLatchCompat(MyLatch,
+				WL_LATCH_SET | WL_POSTMASTER_DEATH |
+					(HistoryPeriod || ProfilePeriod ? WL_TIMEOUT : 0),
+				actual_timeout, PG_WAIT_EXTENSION);
 
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
-
-		ResetLatch(&MyProc->procLatch);
-
-		/* Handle request if any */
-		if (pgws_collector_hdr->request != NO_REQUEST)
-		{
-			LOCKTAG		tag;
-			SHMRequest	request;
-
-			pgws_init_lock_tag(&tag, PGWS_COLLECTOR_LOCK);
-
-			LockAcquire(&tag, ExclusiveLock, false, false);
-			request = pgws_collector_hdr->request;
-			pgws_collector_hdr->request = NO_REQUEST;
-
-			if (request == HISTORY_REQUEST || request == PROFILE_REQUEST)
-			{
-				shm_mq_result	mq_result;
-
-				/* Send history or profile */
-				shm_mq_set_sender(pgws_collector_mq, MyProc);
-				mqh = shm_mq_attach(pgws_collector_mq, NULL, NULL);
-				mq_result = shm_mq_wait_for_attach(mqh);
-				switch (mq_result)
-				{
-					case SHM_MQ_SUCCESS:
-						switch (request)
-						{
-							case HISTORY_REQUEST:
-								send_history(&observations, mqh);
-								break;
-							case PROFILE_REQUEST:
-								send_profile(profile_hash, mqh);
-								break;
-							default:
-								Assert(false);
-						}
-						break;
-					case SHM_MQ_DETACHED:
-						ereport(WARNING,
-								(errmsg("pg_wait_sampling collector: "
-										"receiver of message queue have been "
-										"detached")));
-						break;
-					default:
-						Assert(false);
-				}
-				shm_mq_detach_compat(mqh, pgws_collector_mq);
-			}
-			else if (request == PROFILE_RESET)
-			{
-				/* Reset profile hash */
-				hash_destroy(profile_hash);
-				profile_hash = make_profile_hash();
-			}
-			LockRelease(&tag, ExclusiveLock, false);
-		}
 	}
-
-	MemoryContextReset(collector_context);
 
 	/*
 	 * We're done.  Explicitly detach the shared memory segment so that we

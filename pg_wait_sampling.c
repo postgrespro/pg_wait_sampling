@@ -10,27 +10,22 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
-#include "access/twophase.h"
 #include "catalog/pg_type.h"
-#include "fmgr.h"
 #include "funcapi.h"
-#include "miscadmin.h"
 #include "optimizer/planner.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
+#include "postmaster/bgworker.h"
 #if PG_VERSION_NUM >= 120000
 #include "replication/walsender.h"
 #endif
 #include "storage/ipc.h"
-#include "storage/pg_shmem.h"
-#include "storage/procarray.h"
-#include "storage/shm_mq.h"
-#include "storage/shm_toc.h"
-#include "storage/spin.h"
+#include "storage/proc.h"
 #include "utils/builtins.h"
-#include "utils/datetime.h"
-#include "utils/guc_tables.h"
 #include "utils/guc.h"
+#if PG_VERSION_NUM >= 140000
+#include "utils/queryjumble.h"
+#endif
 #include "utils/memutils.h" /* TopMemoryContext.  Actually for PG 9.6 only,
 							 * but there should be no harm for others. */
 
@@ -39,35 +34,41 @@
 
 PG_MODULE_MAGIC;
 
-void		_PG_init(void);
-
+/* Marker whether extension is setup in shared mode */
 static bool shmem_initialized = false;
+
+/* Global settings */
+int MaxProfileEntries = 5000;
+int HistoryBufferSize = 5000;
+int HistoryPeriod = 0;
+int ProfilePeriod = 10;
+bool WhetherProfilePid = true;
+bool WhetherProfileQueryId = true;
+
+/* Function declarations */
+void _PG_init(void);
+// TODO: add void _PG_fini(void);
 
 /* Hooks */
 static ExecutorEnd_hook_type	prev_ExecutorEnd = NULL;
 static planner_hook_type		planner_hook_next = NULL;
-
-/* Pointers to shared memory objects */
-shm_mq				   *pgws_collector_mq = NULL;
-uint64				   *pgws_proc_queryids = NULL;
-CollectorShmqHeader	   *pgws_collector_hdr = NULL;
-
-/* Receiver (backend) local shm_mq pointers and lock */
-static shm_mq *recv_mq = NULL;
-static shm_mq_handle *recv_mqh = NULL;
-static LOCKTAG queueTag;
-
 #if PG_VERSION_NUM >= 150000
-static shmem_request_hook_type prev_shmem_request_hook = NULL;
+static shmem_request_hook_type 	prev_shmem_request_hook = NULL;
 #endif
-static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-static PGPROC * search_proc(int backendPid);
+static shmem_startup_hook_type	prev_shmem_startup_hook = NULL;
 static PlannedStmt *pgws_planner_hook(Query *parse,
 #if PG_VERSION_NUM >= 130000
 		const char *query_string,
 #endif
 		int cursorOptions, ParamListInfo boundParams);
 static void pgws_ExecutorEnd(QueryDesc *queryDesc);
+
+/* Pointers to shared memory objects */
+pgwsQueryId *pgws_proc_queryids = NULL;
+HTAB		*pgws_hash = NULL;
+LWLock		*pgws_hash_lock = NULL;
+History		*pgws_history_ring = NULL;
+LWLock		*pgws_history_lock = NULL;
 
 /*
  * Calculate max processes count.
@@ -135,53 +136,25 @@ get_max_procs_count(void)
 static Size
 pgws_shmem_size(void)
 {
-	shm_toc_estimator	e;
-	Size				size;
-	int					nkeys;
+	Size size = 0;
 
-	shm_toc_initialize_estimator(&e);
-
-	nkeys = 3;
-
-	shm_toc_estimate_chunk(&e, sizeof(CollectorShmqHeader));
-	shm_toc_estimate_chunk(&e, (Size) COLLECTOR_QUEUE_SIZE);
-	shm_toc_estimate_chunk(&e, sizeof(uint64) * get_max_procs_count());
-
-	shm_toc_estimate_keys(&e, nkeys);
-	size = shm_toc_estimate(&e);
+	size = add_size(size, sizeof(pgwsQueryId) * get_max_procs_count());
+	size = add_size(size, hash_estimate_size(MaxProfileEntries,
+											 sizeof(ProfileHashKey)));
+	size = add_size(size,
+					sizeof(History) + sizeof(HistoryItem) * HistoryBufferSize);
 
 	return size;
 }
 
-static bool
-shmem_int_guc_check_hook(int *newval, void **extra, GucSource source)
+static void
+pgwsEnableQueryId(bool newval, void *extra)
 {
-	if (UsedShmemSegAddr == NULL)
-		return false;
-	return true;
+#if PG_VERSION_NUM >= 140000
+	if (newval)
+		EnableQueryId();
+#endif
 }
-
-static bool
-shmem_bool_guc_check_hook(bool *newval, void **extra, GucSource source)
-{
-	if (UsedShmemSegAddr == NULL)
-		return false;
-	return true;
-}
-
-/*
- * This union allows us to mix the numerous different types of structs
- * that we are organizing.
- */
-typedef union
-{
-	struct config_generic generic;
-	struct config_bool _bool;
-	struct config_real real;
-	struct config_int integer;
-	struct config_string string;
-	struct config_enum _enum;
-} mixedStruct;
 
 /*
  * Setup new GUCs or modify existsing.
@@ -189,95 +162,37 @@ typedef union
 static void
 setup_gucs()
 {
-	struct config_generic **guc_vars;
-	int			numOpts,
-				i;
-	bool		history_size_found = false,
-				history_period_found = false,
-				profile_period_found = false,
-				profile_pid_found = false,
-				profile_queries_found = false;
+	DefineCustomIntVariable("pg_wait_sampling.max_profile_entries",
+			"Sets maximum number of entries in bounded profile table.", NULL,
+			&MaxProfileEntries, 5000, 100, INT_MAX,
+			PGC_POSTMASTER, 0, NULL, NULL, NULL);
 
-	get_guc_variables_compat(&guc_vars, &numOpts);
+	DefineCustomIntVariable("pg_wait_sampling.history_size",
+			"Sets size for ring buffer for waits history in bytes.", NULL,
+			&HistoryBufferSize, 5000, 100, INT_MAX,
+			PGC_POSTMASTER, 0, NULL, NULL, NULL);
 
-	for (i = 0; i < numOpts; i++)
-	{
-		mixedStruct *var = (mixedStruct *) guc_vars[i];
-		const char *name = var->generic.name;
+	DefineCustomIntVariable("pg_wait_sampling.history_period",
+			"Sets period of waits history sampling in milliseconds.",
+			"0 disables history populating.",
+			&HistoryPeriod, 0, 0, INT_MAX,
+			PGC_SIGHUP, 0, NULL, NULL, NULL);
 
-		if (var->generic.flags & GUC_CUSTOM_PLACEHOLDER)
-			continue;
+	DefineCustomIntVariable("pg_wait_sampling.profile_period",
+			"Sets period of waits profile sampling in milliseconds.",
+			"0 disables profiling.",
+			&ProfilePeriod, 10, 0, INT_MAX,
+			PGC_SIGHUP, 0, NULL, NULL, NULL);
 
-		if (!strcmp(name, "pg_wait_sampling.history_size"))
-		{
-			history_size_found = true;
-			var->integer.variable = &pgws_collector_hdr->historySize;
-			pgws_collector_hdr->historySize = 5000;
-		}
-		else if (!strcmp(name, "pg_wait_sampling.history_period"))
-		{
-			history_period_found = true;
-			var->integer.variable = &pgws_collector_hdr->historyPeriod;
-			pgws_collector_hdr->historyPeriod = 10;
-		}
-		else if (!strcmp(name, "pg_wait_sampling.profile_period"))
-		{
-			profile_period_found = true;
-			var->integer.variable = &pgws_collector_hdr->profilePeriod;
-			pgws_collector_hdr->profilePeriod = 10;
-		}
-		else if (!strcmp(name, "pg_wait_sampling.profile_pid"))
-		{
-			profile_pid_found = true;
-			var->_bool.variable = &pgws_collector_hdr->profilePid;
-			pgws_collector_hdr->profilePid = true;
-		}
-		else if (!strcmp(name, "pg_wait_sampling.profile_queries"))
-		{
-			profile_queries_found = true;
-			var->_bool.variable = &pgws_collector_hdr->profileQueries;
-			pgws_collector_hdr->profileQueries = true;
-		}
-	}
+	DefineCustomBoolVariable("pg_wait_sampling.profile_pid",
+			"Sets whether profile should be collected per pid.", NULL,
+			&WhetherProfilePid, true,
+			PGC_POSTMASTER, 0, NULL, NULL, NULL);
 
-	if (!history_size_found)
-		DefineCustomIntVariable("pg_wait_sampling.history_size",
-				"Sets size of waits history.", NULL,
-				&pgws_collector_hdr->historySize, 5000, 100, INT_MAX,
-				PGC_SUSET, 0, shmem_int_guc_check_hook, NULL, NULL);
-
-	if (!history_period_found)
-		DefineCustomIntVariable("pg_wait_sampling.history_period",
-				"Sets period of waits history sampling.", NULL,
-				&pgws_collector_hdr->historyPeriod, 10, 1, INT_MAX,
-				PGC_SUSET, 0, shmem_int_guc_check_hook, NULL, NULL);
-
-	if (!profile_period_found)
-		DefineCustomIntVariable("pg_wait_sampling.profile_period",
-				"Sets period of waits profile sampling.", NULL,
-				&pgws_collector_hdr->profilePeriod, 10, 1, INT_MAX,
-				PGC_SUSET, 0, shmem_int_guc_check_hook, NULL, NULL);
-
-	if (!profile_pid_found)
-		DefineCustomBoolVariable("pg_wait_sampling.profile_pid",
-				"Sets whether profile should be collected per pid.", NULL,
-				&pgws_collector_hdr->profilePid, true,
-				PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
-
-	if (!profile_queries_found)
-		DefineCustomBoolVariable("pg_wait_sampling.profile_queries",
-				"Sets whether profile should be collected per query.", NULL,
-				&pgws_collector_hdr->profileQueries, true,
-				PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
-
-	if (history_size_found
-		|| history_period_found
-		|| profile_period_found
-		|| profile_pid_found
-		|| profile_queries_found)
-	{
-		ProcessConfigFile(PGC_SIGHUP);
-	}
+	DefineCustomBoolVariable("pg_wait_sampling.profile_queries",
+			"Sets whether profile should be collected per query.", NULL,
+			&WhetherProfileQueryId, true,
+			PGC_POSTMASTER, 0, NULL, pgwsEnableQueryId, NULL);
 }
 
 #if PG_VERSION_NUM >= 150000
@@ -294,6 +209,7 @@ pgws_shmem_request(void)
 		prev_shmem_request_hook();
 
 	RequestAddinShmemSpace(pgws_shmem_size());
+	RequestNamedLWLockTranche("pg_wait_sampling", 2);
 }
 #endif
 
@@ -303,48 +219,45 @@ pgws_shmem_request(void)
 static void
 pgws_shmem_startup(void)
 {
-	bool		found;
-	Size		segsize = pgws_shmem_size();
-	void	   *pgws;
-	shm_toc	   *toc;
-
-	pgws = ShmemInitStruct("pg_wait_sampling", segsize, &found);
-
-	if (!found)
-	{
-		toc = shm_toc_create(PG_WAIT_SAMPLING_MAGIC, pgws, segsize);
-
-		pgws_collector_hdr = shm_toc_allocate(toc, sizeof(CollectorShmqHeader));
-		shm_toc_insert(toc, 0, pgws_collector_hdr);
-		pgws_collector_mq = shm_toc_allocate(toc, COLLECTOR_QUEUE_SIZE);
-		shm_toc_insert(toc, 1, pgws_collector_mq);
-		pgws_proc_queryids = shm_toc_allocate(toc,
-									sizeof(uint64) * get_max_procs_count());
-		shm_toc_insert(toc, 2, pgws_proc_queryids);
-		MemSet(pgws_proc_queryids, 0, sizeof(uint64) * get_max_procs_count());
-
-		/* Initialize GUC variables in shared memory */
-		setup_gucs();
-	}
-	else
-	{
-		toc = shm_toc_attach(PG_WAIT_SAMPLING_MAGIC, pgws);
-
-#if PG_VERSION_NUM >= 100000
-		pgws_collector_hdr = shm_toc_lookup(toc, 0, false);
-		pgws_collector_mq = shm_toc_lookup(toc, 1, false);
-		pgws_proc_queryids = shm_toc_lookup(toc, 2, false);
-#else
-		pgws_collector_hdr = shm_toc_lookup(toc, 0);
-		pgws_collector_mq = shm_toc_lookup(toc, 1);
-		pgws_proc_queryids = shm_toc_lookup(toc, 2);
-#endif
-	}
-
-	shmem_initialized = true;
+	bool	found;
+	HASHCTL	info;
 
 	if (prev_shmem_startup_hook)
 		prev_shmem_startup_hook();
+
+	/* Create or attach to the shared memory state */
+	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+
+	pgws_proc_queryids = ShmemInitStruct(
+			"pg_wait_sampling queryids",
+			sizeof(pgwsQueryId) * get_max_procs_count(),
+			&found);
+	MemSet(pgws_proc_queryids, 0, sizeof(pgwsQueryId) * get_max_procs_count());
+	if (!found)
+	{
+		/* First time through ... */
+		LWLockPadded *locks = GetNamedLWLockTranche("pg_wait_sampling");
+
+		pgws_hash_lock = &(locks[0]).lock;
+		pgws_history_lock = &(locks[1]).lock;
+	}
+
+	pgws_history_ring = ShmemInitStruct(
+			"pg_wait_sampling history ring",
+			sizeof(History) + sizeof(HistoryItem) * HistoryBufferSize,
+			&found);
+	pgws_history_ring->index = 0;
+
+	memset(&info, 0, sizeof(info));
+	info.keysize = sizeof(ProfileHashKey);
+	info.entrysize = sizeof(ProfileHashEntry);
+	pgws_hash = ShmemInitHash("pg_wait_sampling hash",
+							  MaxProfileEntries, MaxProfileEntries,
+							  &info, HASH_ELEM | HASH_BLOBS);
+
+	LWLockRelease(AddinShmemInitLock);
+
+	shmem_initialized = true;
 }
 
 /*
@@ -360,13 +273,27 @@ check_shmem(void)
 	}
 }
 
+/*
+ * Register background worker for collecting waits history.
+ */
 static void
-pgws_cleanup_callback(int code, Datum arg)
+pgws_register_wait_collector(void)
 {
-	elog(DEBUG3, "pg_wait_sampling cleanup: detaching shm_mq and releasing queue lock");
-	shm_mq_detach_compat(recv_mqh, recv_mq);
-	LockRelease(&queueTag, ExclusiveLock, false);
+	BackgroundWorker worker;
+
+	/* Set up background worker parameters */
+	memset(&worker, 0, sizeof(worker));
+	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
+	worker.bgw_start_time = BgWorkerStart_ConsistentState;
+	worker.bgw_restart_time = 1;
+	worker.bgw_notify_pid = 0;
+	snprintf(worker.bgw_library_name, BGW_MAXLEN, "pg_wait_sampling");
+	snprintf(worker.bgw_function_name, BGW_MAXLEN, CppAsString(pgws_collector_main));
+	snprintf(worker.bgw_name, BGW_MAXLEN, "pg_wait_sampling collector");
+	worker.bgw_main_arg = (Datum) 0;
+	RegisterBackgroundWorker(&worker);
 }
+
 
 /*
  * Module load callback
@@ -376,6 +303,8 @@ _PG_init(void)
 {
 	if (!process_shared_preload_libraries_in_progress)
 		return;
+
+	setup_gucs();
 
 #if PG_VERSION_NUM < 150000
 	/*
@@ -387,6 +316,7 @@ _PG_init(void)
 	 * in pgsp_shmem_request() for pg15 and later.
 	 */
 	RequestAddinShmemSpace(pgws_shmem_size());
+	RequestNamedLWLockTranche("pg_wait_sampling", 2);
 #endif
 
 	pgws_register_wait_collector();
@@ -555,111 +485,13 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 	}
 }
 
-typedef struct
-{
-	Size			count;
-	ProfileItem	   *items;
-} Profile;
-
-void
-pgws_init_lock_tag(LOCKTAG *tag, uint32 lock)
-{
-	tag->locktag_field1 = PG_WAIT_SAMPLING_MAGIC;
-	tag->locktag_field2 = lock;
-	tag->locktag_field3 = 0;
-	tag->locktag_field4 = 0;
-	tag->locktag_type = LOCKTAG_USERLOCK;
-	tag->locktag_lockmethodid = USER_LOCKMETHOD;
-}
-
-static void *
-receive_array(SHMRequest request, Size item_size, Size *count)
-{
-	LOCKTAG			collectorTag;
-	shm_mq_result	res;
-	Size			len,
-					i;
-	void		   *data;
-	Pointer			result,
-					ptr;
-	MemoryContext	oldctx;
-
-	/* Ensure nobody else trying to send request to queue */
-	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
-	LockAcquire(&queueTag, ExclusiveLock, false, false);
-
-	pgws_init_lock_tag(&collectorTag, PGWS_COLLECTOR_LOCK);
-	LockAcquire(&collectorTag, ExclusiveLock, false, false);
-	recv_mq = shm_mq_create(pgws_collector_mq, COLLECTOR_QUEUE_SIZE);
-	pgws_collector_hdr->request = request;
-	LockRelease(&collectorTag, ExclusiveLock, false);
-
-	if (!pgws_collector_hdr->latch)
-		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
-						errmsg("pg_wait_sampling collector wasn't started")));
-
-	SetLatch(pgws_collector_hdr->latch);
-
-	shm_mq_set_receiver(recv_mq, MyProc);
-
-	/*
-	 * We switch to TopMemoryContext, so that recv_mqh is allocated there
-	 * and is guaranteed to survive until before_shmem_exit callbacks are
-	 * fired.  Anyway, shm_mq_detach() will free handler on its own.
-	 *
-	 * NB: we do not pass `seg` to shm_mq_attach(), so it won't set its own
-	 * callback, i.e. we do not interfere here with shm_mq_detach_callback().
-	 */
-	oldctx = MemoryContextSwitchTo(TopMemoryContext);
-	recv_mqh = shm_mq_attach(recv_mq, NULL, NULL);
-	MemoryContextSwitchTo(oldctx);
-
-	/*
-	 * Now we surely attached to the shm_mq and got collector's attention.
-	 * If anything went wrong (e.g. Ctrl+C received from the client) we have
-	 * to cleanup some things, i.e. detach from the shm_mq, so collector was
-	 * able to continue responding to other requests.
-	 *
-	 * PG_ENSURE_ERROR_CLEANUP() guaranties that cleanup callback will be
-	 * fired for both ERROR and FATAL.
-	 */
-	PG_ENSURE_ERROR_CLEANUP(pgws_cleanup_callback, 0);
-	{
-		res = shm_mq_receive(recv_mqh, &len, &data, false);
-		if (res != SHM_MQ_SUCCESS || len != sizeof(*count))
-			elog(ERROR, "error reading mq");
-
-		memcpy(count, data, sizeof(*count));
-
-		result = palloc(item_size * (*count));
-		ptr = result;
-
-		for (i = 0; i < *count; i++)
-		{
-			res = shm_mq_receive(recv_mqh, &len, &data, false);
-			if (res != SHM_MQ_SUCCESS || len != item_size)
-				elog(ERROR, "error reading mq");
-
-			memcpy(ptr, data, item_size);
-			ptr += item_size;
-		}
-	}
-	PG_END_ENSURE_ERROR_CLEANUP(pgws_cleanup_callback, 0);
-
-	/* We still have to detach and release lock during normal operation. */
-	shm_mq_detach_compat(recv_mqh, recv_mq);
-	LockRelease(&queueTag, ExclusiveLock, false);
-
-	return result;
-}
-
 
 PG_FUNCTION_INFO_V1(pg_wait_sampling_get_profile);
 Datum
 pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 {
-	Profile			   *profile;
-	FuncCallContext	   *funcctx;
+	ProfileHashEntry	*profile;
+	FuncCallContext		*funcctx;
 
 	check_shmem();
 
@@ -667,17 +499,31 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 	{
 		MemoryContext		oldcontext;
 		TupleDesc			tupdesc;
+		HASH_SEQ_STATUS		hash_seq;
+		ProfileHashEntry   *entry;
+		int					profile_count,
+							entry_index;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-		/* Receive profile from shmq */
-		profile = (Profile *) palloc0(sizeof(Profile));
-		profile->items = (ProfileItem *) receive_array(PROFILE_REQUEST,
-										sizeof(ProfileItem), &profile->count);
+		/* Extract profile from shared memory */
+		profile_count = hash_get_num_entries(pgws_hash);
+		profile = (ProfileHashEntry *)
+			palloc(sizeof(ProfileHashEntry) * profile_count);
 
+		entry_index = 0;
+		LWLockAcquire(pgws_hash_lock, LW_SHARED);
+		hash_seq_init(&hash_seq, pgws_hash);
+		while ((entry = hash_seq_search(&hash_seq)) != NULL)
+		{
+			profile[entry_index++] = *entry;
+		}
+		LWLockRelease(pgws_hash_lock);
+
+		/* Build result rows */
 		funcctx->user_fctx = profile;
-		funcctx->max_calls = profile->count;
+		funcctx->max_calls = profile_count;
 
 		/* Make tuple descriptor */
 		tupdesc = CreateTemplateTupleDescCompat(5, false);
@@ -699,7 +545,7 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 	/* stuff done on every call of the function */
 	funcctx = SRF_PERCALL_SETUP();
 
-	profile = (Profile *) funcctx->user_fctx;
+	profile = (ProfileHashEntry *) funcctx->user_fctx;
 
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
@@ -707,19 +553,22 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		Datum		values[5];
 		bool		nulls[5];
 		HeapTuple	tuple;
-		ProfileItem *item;
+		ProfileHashEntry *item;
 		const char *event_type,
 				   *event;
 
-		item = &profile->items[funcctx->call_cntr];
+		item = &profile[funcctx->call_cntr];
 
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
 		/* Make and return next tuple to caller */
-		event_type = pgstat_get_wait_event_type(item->wait_event_info);
-		event = pgstat_get_wait_event(item->wait_event_info);
-		values[0] = Int32GetDatum(item->pid);
+		event_type = pgstat_get_wait_event_type(item->key.wait_event_info);
+		event = pgstat_get_wait_event(item->key.wait_event_info);
+		if (WhetherProfilePid)
+			values[0] = Int32GetDatum(item->key.pid);
+		else
+			nulls[0] = true;
 		if (event_type)
 			values[1] = PointerGetDatum(cstring_to_text(event_type));
 		else
@@ -729,12 +578,12 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		else
 			nulls[2] = true;
 
-		if (pgws_collector_hdr->profileQueries)
-			values[3] = UInt64GetDatum(item->queryId);
+		if (WhetherProfileQueryId)
+			values[3] = UInt64GetDatum(item->key.queryid);
 		else
-			values[3] = (Datum) 0;
+			nulls[3] = true;
 
-		values[4] = UInt64GetDatum(item->count);
+		values[4] = UInt64GetDatum(item->counter);
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
@@ -751,22 +600,29 @@ PG_FUNCTION_INFO_V1(pg_wait_sampling_reset_profile);
 Datum
 pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 {
-	LOCKTAG		collectorTag;
+	HASH_SEQ_STATUS		hash_seq;
+	ProfileHashEntry   *entry;
 
 	check_shmem();
 
-	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
+	LWLockAcquire(pgws_hash_lock, LW_EXCLUSIVE);
 
-	LockAcquire(&queueTag, ExclusiveLock, false, false);
+	/* Remove all profile entries. */
+	hash_seq_init(&hash_seq, pgws_hash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		hash_search(pgws_hash, &entry->key, HASH_REMOVE, NULL);
+	}
 
-	pgws_init_lock_tag(&collectorTag, PGWS_COLLECTOR_LOCK);
-	LockAcquire(&collectorTag, ExclusiveLock, false, false);
-	pgws_collector_hdr->request = PROFILE_RESET;
-	LockRelease(&collectorTag, ExclusiveLock, false);
+	LWLockRelease(pgws_hash_lock);
 
-	SetLatch(pgws_collector_hdr->latch);
-
-	LockRelease(&queueTag, ExclusiveLock, false);
+	/*
+	 * TODO: consider saving of the time of statistics reset to more easly
+	 * compute the differential counters. It might look as global time
+	 * accessable via separate function call as it's done in pg_stat_statemens
+	 * or more granular time accounting per profile entries to take into account
+	 * evictions of these entries from restricted by size hashtable.
+	 */
 
 	PG_RETURN_VOID();
 }
@@ -775,7 +631,7 @@ PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history);
 Datum
 pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 {
-	History				*history;
+	HistoryItem			*history;
 	FuncCallContext		*funcctx;
 
 	check_shmem();
@@ -784,17 +640,25 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 	{
 		MemoryContext	oldcontext;
 		TupleDesc		tupdesc;
+		int				history_size;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-		/* Receive history from shmq */
-		history = (History *) palloc0(sizeof(History));
-		history->items = (HistoryItem *) receive_array(HISTORY_REQUEST,
-										sizeof(HistoryItem), &history->count);
+		/* Extract history from shared ring buffer */
+		LWLockAcquire(pgws_history_lock, LW_SHARED);
 
+		history_size = pgws_history_ring->index < HistoryBufferSize ?
+			pgws_history_ring->index : HistoryBufferSize;
+		history = (HistoryItem *) palloc(history_size * sizeof(HistoryItem));
+		memcpy(history, pgws_history_ring->items,
+			   history_size * sizeof(HistoryItem));
+
+		LWLockRelease(pgws_history_lock);
+
+		/* Save function context */
 		funcctx->user_fctx = history;
-		funcctx->max_calls = history->count;
+		funcctx->max_calls = history_size;
 
 		/* Make tuple descriptor */
 		tupdesc = CreateTemplateTupleDescCompat(5, false);
@@ -816,9 +680,9 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 	/* stuff done on every call of the function */
 	funcctx = SRF_PERCALL_SETUP();
 
-	history = (History *) funcctx->user_fctx;
+	history = (HistoryItem *) funcctx->user_fctx;
 
-	if (history->index < history->count)
+	if (funcctx->call_cntr < funcctx->max_calls)
 	{
 		HeapTuple	tuple;
 		HistoryItem *item;
@@ -827,7 +691,7 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		const char *event_type,
 				   *event;
 
-		item = &history->items[history->index];
+		item = &history[funcctx->call_cntr];
 
 		/* Make and return next tuple to caller */
 		MemSet(values, 0, sizeof(values));
@@ -849,7 +713,6 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		values[4] = UInt64GetDatum(item->queryId);
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
-		history->index++;
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
 	}
 	else
@@ -875,20 +738,11 @@ pgws_planner_hook(Query *parse,
 	if (MyProc)
 	{
 		int i = MyProc - ProcGlobal->allProcs;
-#if PG_VERSION_NUM >= 110000
-		/*
-		 * since we depend on queryId we need to check that its size
-		 * is uint64 as we coded in pg_wait_sampling
-		 */
-		StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint64),
-				"queryId size is not uint64");
-#else
-		StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint32),
-				"queryId size is not uint32");
-#endif
+
+		StaticAssertExpr(sizeof(parse->queryId) == sizeof(pgwsQueryId),
+						 "queryId size is not correct");
 		if (!pgws_proc_queryids[i])
 			pgws_proc_queryids[i] = parse->queryId;
-
 	}
 
 	/* Invoke original hook if needed */

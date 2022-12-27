@@ -14,8 +14,13 @@
 
 #include "access/tupdesc.h"
 #include "miscadmin.h"
-#include "storage/shm_mq.h"
-#include "utils/guc_tables.h"
+#include "storage/latch.h"
+
+#if PG_VERSION_NUM >= 110000
+typedef uint64 pgwsQueryId;
+#else
+typedef uint32 pgwsQueryId;
+#endif
 
 static inline TupleDesc
 CreateTemplateTupleDescCompat(int nattrs, bool hasoid)
@@ -24,27 +29,6 @@ CreateTemplateTupleDescCompat(int nattrs, bool hasoid)
 	return CreateTemplateTupleDesc(nattrs);
 #else
 	return CreateTemplateTupleDesc(nattrs, hasoid);
-#endif
-}
-
-static inline void
-shm_mq_detach_compat(shm_mq_handle *mqh, shm_mq *mq)
-{
-#if PG_VERSION_NUM >= 100000
-	shm_mq_detach(mqh);
-#else
-	shm_mq_detach(mq);
-#endif
-}
-
-static inline shm_mq_result
-shm_mq_send_compat(shm_mq_handle *mqh, Size nbytes, const void *data,
-				   bool nowait, bool force_flush)
-{
-#if PG_VERSION_NUM >= 150000
-	return shm_mq_send(mqh, nbytes, data, nowait, force_flush);
-#else
-	return shm_mq_send(mqh, nbytes, data, nowait);
 #endif
 }
 
@@ -66,18 +50,20 @@ InitPostgresCompat(const char *in_dbname, Oid dboid,
 #endif
 }
 
-static inline void
-get_guc_variables_compat(struct config_generic ***vars, int *num_vars)
+static inline int
+WaitLatchCompat(Latch *latch, int wakeEvents, long timeout,
+				uint32 wait_event_info)
 {
-	Assert(vars != NULL);
-	Assert(num_vars != NULL);
-
-#if PG_VERSION_NUM >= 160000
-	*vars = get_guc_variables(num_vars);
+#if PG_VERSION_NUM >= 100000
+	return WaitLatch(latch, wakeEvents, timeout, wait_event_info);
 #else
-	*vars = get_guc_variables();
-	*num_vars = GetNumConfigOptions();
+#define PG_WAIT_EXTENSION -1
+	return WaitLatch(latch, wakeEvents, timeout);
 #endif
 }
+
+#if PG_VERSION_NUM < 100000
+#define GetPGProcByNumber(n) (&ProcGlobal->allProcs[(n)])
+#endif
 
 #endif
