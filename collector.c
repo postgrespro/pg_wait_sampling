@@ -324,12 +324,15 @@ pgws_collector_main(Datum main_arg)
 			HistoryPeriod - (int) history_diff : 0;
 		profile_timeout = ProfilePeriod >= (int) profile_diff ?
 			ProfilePeriod - (int) profile_diff : 0;
+
+		actual_timeout = 0;
 		if (ProfilePeriod && !HistoryPeriod)
 			actual_timeout = profile_timeout;
 		else if (HistoryPeriod && !ProfilePeriod)
 			actual_timeout = history_timeout;
 		else if (HistoryPeriod && ProfilePeriod)
 			actual_timeout = Min(history_timeout, profile_timeout);
+
 		rc = WaitLatchCompat(MyLatch,
 				WL_LATCH_SET | WL_POSTMASTER_DEATH |
 					(HistoryPeriod || ProfilePeriod ? WL_TIMEOUT : 0),
