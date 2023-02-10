@@ -140,7 +140,7 @@ pgws_shmem_size(void)
 
 	size = add_size(size, sizeof(pgwsQueryId) * get_max_procs_count());
 	size = add_size(size, hash_estimate_size(MaxProfileEntries,
-											 sizeof(ProfileHashKey)));
+											 sizeof(ProfileHashEntry)));
 	size = add_size(size,
 					sizeof(History) + sizeof(HistoryItem) * HistoryBufferSize);
 
