@@ -129,16 +129,27 @@ probe_waits(const bool write_history, const bool write_profile)
 		int32 	 	wait_event_info = proc->wait_event_info,
 					pid = proc->pid;
 
-		// FIXME: zero pid actually doesn't indicate that process slot is freed.
-		// After process termination this field becomes unchanged and thereby
-		// stores the pid of previous process. The possible indicator of process
-		// termination might be a condition `proc->procLatch->owner_pid == 0`.
-		// Abother option is to use the lists of freed PGPROCs from ProcGlocal:
-		// freeProcs, walsenderFreeProcs, bgworkerFreeProcs and autovacFreeProcs
-		// to define indexes of all freed slots in allProcs.
-		// The most appropriate solution here is to iterate over ProcArray items
-		// to explicitly access to the all live PGPROC entries. This will
-		// require to build iterator object over protected procArray.
+		/*
+		 * FIXME: zero pid actually doesn't indicate that process slot is freed.
+		 * After process termination this field becomes unchanged and thereby
+		 * stores the pid of previous process. The possible indicator of process
+		 * termination might be a condition `proc->procLatch->owner_pid == 0`.
+		 * But even in this case ProcArrayLock doesn't protect `owner_pid`
+		 * field from concurrent modifications that might cause race conditions.
+		 *
+		 * Abother option is to use the lists of freed PGPROCs from ProcGlocal:
+		 * freeProcs, walsenderFreeProcs, bgworkerFreeProcs and autovacFreeProcs
+		 * to define indexes of all freed slots in allProcs. But this requires
+		 * acquiring ProcStructLock spinlock that is impractical for iteration
+		 * over so long lists.
+		 *
+		 * The most appropriate solution here is to iterate over ProcArray items
+		 * under ProcArrayLock and over AuxiliaryProcs under ProcStructLock
+		 * spinlock (AuxiliaryProcs contains just NUM_AUXILIARY_PROCS=5 slots)
+		 * or without any locks as it's done in pg_stat_get_activity() function.
+		 * These arrays are not accessible externally and require to add some
+		 * iterator object into corresponding containing modules.
+		 */
 		if (pid == 0)
 			continue;
 
