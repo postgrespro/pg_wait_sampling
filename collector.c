@@ -120,7 +120,16 @@ probe_waits(const bool write_history, const bool write_profile)
 	if (write_history)
 		LWLockAcquire(pgws_history_lock, LW_EXCLUSIVE);
 
-	/* Iterate PGPROCs under shared lock */
+	/*
+	 * Iterate PGPROCs under shared lock.
+	 *
+	 * TODO:
+	 * ProcArrayLock is heavy enough and in current case we might perform the
+	 * non-trivial deallocation routine for profile hash table under this lock.
+	 * Therefore to reduce possible contention it's worth to segregate the logic
+	 * of PGPROCs iteration under ProcArrayLock and storing results to profile
+	 * and/or history under corresponding another lock.
+	 */
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 	for (int i = 0; i < ProcGlobal->allProcCount; i++)
 	{
