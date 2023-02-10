@@ -65,8 +65,8 @@ static void pgws_ExecutorEnd(QueryDesc *queryDesc);
 
 /* Pointers to shared memory objects */
 pgwsQueryId *pgws_proc_queryids = NULL;
-HTAB		*pgws_hash = NULL;
-LWLock		*pgws_hash_lock = NULL;
+HTAB		*pgws_profile_hash = NULL;
+LWLock		*pgws_profile_lock = NULL;
 History		*pgws_history_ring = NULL;
 LWLock		*pgws_history_lock = NULL;
 
@@ -238,7 +238,7 @@ pgws_shmem_startup(void)
 		/* First time through ... */
 		LWLockPadded *locks = GetNamedLWLockTranche("pg_wait_sampling");
 
-		pgws_hash_lock = &(locks[0]).lock;
+		pgws_profile_lock = &(locks[0]).lock;
 		pgws_history_lock = &(locks[1]).lock;
 	}
 
@@ -251,9 +251,9 @@ pgws_shmem_startup(void)
 	memset(&info, 0, sizeof(info));
 	info.keysize = sizeof(ProfileHashKey);
 	info.entrysize = sizeof(ProfileHashEntry);
-	pgws_hash = ShmemInitHash("pg_wait_sampling hash",
-							  MaxProfileEntries, MaxProfileEntries,
-							  &info, HASH_ELEM | HASH_BLOBS);
+	pgws_profile_hash = ShmemInitHash("pg_wait_sampling hash",
+									  MaxProfileEntries, MaxProfileEntries,
+									  &info, HASH_ELEM | HASH_BLOBS);
 
 	LWLockRelease(AddinShmemInitLock);
 
@@ -508,18 +508,18 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
 		/* Extract profile from shared memory */
-		profile_count = hash_get_num_entries(pgws_hash);
+		profile_count = hash_get_num_entries(pgws_profile_hash);
 		profile = (ProfileHashEntry *)
 			palloc(sizeof(ProfileHashEntry) * profile_count);
 
 		entry_index = 0;
-		LWLockAcquire(pgws_hash_lock, LW_SHARED);
-		hash_seq_init(&hash_seq, pgws_hash);
+		LWLockAcquire(pgws_profile_lock, LW_SHARED);
+		hash_seq_init(&hash_seq, pgws_profile_hash);
 		while ((entry = hash_seq_search(&hash_seq)) != NULL)
 		{
 			profile[entry_index++] = *entry;
 		}
-		LWLockRelease(pgws_hash_lock);
+		LWLockRelease(pgws_profile_lock);
 
 		/* Build result rows */
 		funcctx->user_fctx = profile;
@@ -605,16 +605,16 @@ pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 
 	check_shmem();
 
-	LWLockAcquire(pgws_hash_lock, LW_EXCLUSIVE);
+	LWLockAcquire(pgws_profile_lock, LW_EXCLUSIVE);
 
 	/* Remove all profile entries. */
-	hash_seq_init(&hash_seq, pgws_hash);
+	hash_seq_init(&hash_seq, pgws_profile_hash);
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
-		hash_search(pgws_hash, &entry->key, HASH_REMOVE, NULL);
+		hash_search(pgws_profile_hash, &entry->key, HASH_REMOVE, NULL);
 	}
 
-	LWLockRelease(pgws_hash_lock);
+	LWLockRelease(pgws_profile_lock);
 
 	/*
 	 * TODO: consider saving of the time of statistics reset to more easly

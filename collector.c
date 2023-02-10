@@ -79,11 +79,12 @@ pgws_entry_dealloc()
 	 * While we're scanning the table, apply the decay factor to the usage
 	 * values.
 	 */
-	entries =
-		palloc(hash_get_num_entries(pgws_hash) * sizeof(ProfileHashEntry *));
+	entries = palloc(
+		hash_get_num_entries(pgws_profile_hash) * sizeof(ProfileHashEntry *)
+	);
 
 	i = 0;
-	hash_seq_init(&hash_seq, pgws_hash);
+	hash_seq_init(&hash_seq, pgws_profile_hash);
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
 		entries[i++] = entry;
@@ -102,7 +103,7 @@ pgws_entry_dealloc()
 
 	for (i = 0; i < nvictims; i++)
 	{
-		hash_search(pgws_hash, &entries[i]->key, HASH_REMOVE, NULL);
+		hash_search(pgws_profile_hash, &entries[i]->key, HASH_REMOVE, NULL);
 	}
 
 	pfree(entries);
@@ -115,7 +116,7 @@ static void
 probe_waits(const bool write_history, const bool write_profile)
 {
 	if (write_profile)
-		LWLockAcquire(pgws_hash_lock, LW_EXCLUSIVE);
+		LWLockAcquire(pgws_profile_lock, LW_EXCLUSIVE);
 	if (write_history)
 		LWLockAcquire(pgws_history_lock, LW_EXCLUSIVE);
 
@@ -168,19 +169,19 @@ probe_waits(const bool write_history, const bool write_profile)
 			key.queryid = queryId;
 
 			/* Lookup the hash table entry with exclusive lock */
-			entry = (ProfileHashEntry *) hash_search(pgws_hash, &key, HASH_FIND,
-													 NULL);
+			entry = (ProfileHashEntry *)
+				hash_search(pgws_profile_hash, &key, HASH_FIND, NULL);
 
 			/* Create new entry, if not present */
 			if (!entry)
 			{
 
 				/* Make space if needed */
-				while (hash_get_num_entries(pgws_hash) >= MaxProfileEntries)
+				while (hash_get_num_entries(pgws_profile_hash) >= MaxProfileEntries)
 					pgws_entry_dealloc();
 
-				entry = (ProfileHashEntry *) hash_search(pgws_hash, &key,
-														 HASH_ENTER_NULL, NULL);
+				entry = (ProfileHashEntry *)
+					hash_search(pgws_profile_hash, &key, HASH_ENTER_NULL, NULL);
 				Assert(entry);
 
 				entry->counter = 1;
@@ -198,7 +199,7 @@ probe_waits(const bool write_history, const bool write_profile)
 	if (write_history)
 		LWLockRelease(pgws_history_lock);
 	if (write_profile)
-		LWLockRelease(pgws_hash_lock);
+		LWLockRelease(pgws_profile_lock);
 }
 
 /*

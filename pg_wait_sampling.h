@@ -57,8 +57,8 @@ typedef struct
 
 /* pg_wait_sampling.c */
 extern pgwsQueryId	*pgws_proc_queryids;
-extern HTAB 		*pgws_hash;
-extern LWLock 		*pgws_hash_lock;
+extern HTAB 		*pgws_profile_hash;
+extern LWLock 		*pgws_profile_lock;
 extern History		*pgws_history_ring;
 extern LWLock		*pgws_history_lock;
 
