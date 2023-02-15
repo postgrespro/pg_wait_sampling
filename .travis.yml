@@ -28,5 +28,5 @@ env:
     - PG_VERSION=13      CHECK_CODE=false
     - PG_VERSION=14      CHECK_CODE=clang
     - PG_VERSION=14      CHECK_CODE=false
-    - PG_VERSION=15beta3 CHECK_CODE=clang
-    - PG_VERSION=15beta3 CHECK_CODE=false
+    - PG_VERSION=15      CHECK_CODE=clang
+    - PG_VERSION=15      CHECK_CODE=false
