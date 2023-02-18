@@ -1,0 +1,27 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_update_tuple_in_txn s2_try_to_concurrently_update_tuple s1_expose_query_from_profile s1_rollback_txn
+step s1_update_tuple_in_txn: 
+		begin;
+		update test set i = i+1;
+
+step s2_try_to_concurrently_update_tuple: 
+		begin;
+		update test set i = i+1;
+		rollback;
+ <waiting ...>
+step s1_expose_query_from_profile: 
+		select waiting_on_txnid_lock_query(pid)
+		from pg_stat_activity
+		where backend_type = 'client backend'
+		  and wait_event_type = 'Lock';
+
+waiting_on_txnid_lock_query
+---------------------------
+update test set i = i+$1   
+(1 row)
+
+step s1_rollback_txn: 
+		rollback;
+
+step s2_try_to_concurrently_update_tuple: <... completed>

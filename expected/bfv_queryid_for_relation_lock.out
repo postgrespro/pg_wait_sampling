@@ -1,0 +1,27 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_acquire_lock_on_relation s2_wait_on_relation_lock s1_expose_query_from_profile s1_release_relation_lock
+step s1_acquire_lock_on_relation: 
+		begin;
+		lock pg_class in access exclusive mode;
+
+step s2_wait_on_relation_lock: 
+		begin;
+		lock pg_class in access share mode;
+		rollback;
+ <waiting ...>
+step s1_expose_query_from_profile: 
+		select waiting_on_relation_lock_query(pid)
+		from pg_stat_activity
+		where backend_type = 'client backend'
+		  and wait_event_type = 'Lock';
+
+waiting_on_relation_lock_query
+------------------------------
+                              
+(1 row)
+
+step s1_release_relation_lock: 
+		rollback;
+
+step s2_wait_on_relation_lock: <... completed>

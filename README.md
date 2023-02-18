@@ -70,15 +70,42 @@ higher. Before build and install you should ensure following:
 
 Typical installation procedure may look like this:
 
-    $ git clone https://github.com/postgrespro/pg_wait_sampling.git
-    $ cd pg_wait_sampling
-    $ make USE_PGXS=1
-    $ sudo make USE_PGXS=1 install
-    $ make USE_PGXS=1 installcheck
-    $ psql DB -c "CREATE EXTENSION pg_wait_sampling;"
+```bash
+git clone https://github.com/postgrespro/pg_wait_sampling.git
+cd pg_wait_sampling
+make USE_PGXS=1 install
+
+# Add `pg_wait_sampling` string to `shared_preload_libraries` parameter in
+# `postgresql.conf` and restart PostgreSQL instance
+psql DB -c "CREATE EXTENSION pg_wait_sampling;"
+```
 
 Compilation on Windows is not supported, since the extension uses symbols from PostgreSQL
 that are not exported.
+
+Running full test suite on already running instance:
+
+```bash
+make USE_PGXS=1 installcheck
+```
+
+> **_NOTE:_**  isolation tests require `pg_stat_statements` extension as prerequisite
+
+To run specific test cases use the following commands:
+
+* for regression tests:
+
+  ```bash
+  /path/to/pgsrc/or/pgxs/src/test/regress/pg_regress --bindir=/path/to/pg/bin [OTHER_OPTS] TEST1 TEST2 ...
+  ```
+
+* for isolation tests:
+
+  ```bash
+  /path/to/pgsrc/or/pgxs/src/test/isolation/pg_isolation_regress --bindir=/path/to/pg/bin [OTHER_OPTS] TEST1 TEST2 ...
+  ```
+
+Some isolation tests have _bfv\_ (denoting "bugfix verification") prefix. They cover previously fixed buggy cases occurred in development of extension.
 
 Usage
 -----
