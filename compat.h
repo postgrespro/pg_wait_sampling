@@ -55,7 +55,10 @@ InitPostgresCompat(const char *in_dbname, Oid dboid,
 				   bool override_allow_connections,
 				   char *out_dbname)
 {
-#if PG_VERSION_NUM >= 150000
+#if PG_VERSION_NUM >= 170000
+	InitPostgres(in_dbname, dboid, username, useroid, (load_session_libraries ? INIT_PG_LOAD_SESSION_LIBS : 0) |
+				 (override_allow_connections ? INIT_PG_OVERRIDE_ALLOW_CONNS : 0), out_dbname);
+#elif PG_VERSION_NUM >= 150000
 	InitPostgres(in_dbname, dboid, username, useroid, load_session_libraries,
 				 override_allow_connections, out_dbname);
 #elif PG_VERSION_NUM >= 110000
