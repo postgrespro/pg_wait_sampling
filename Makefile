@@ -20,12 +20,3 @@ top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
-
-# Prepare the package for PGXN submission
-package: dist .git
-	$(eval DISTVERSION := $(shell git tag -l | tail -n 1 | cut -d 'v' -f 2))
-	$(info Generating zip file for version $(DISTVERSION)...)
-	git archive --format zip --prefix=$(EXTENSION)-${DISTVERSION}/ --output dist/$(EXTENSION)-${DISTVERSION}.zip HEAD
-
-dist:
-	mkdir -p dist
