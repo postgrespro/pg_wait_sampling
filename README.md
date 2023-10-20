@@ -73,8 +73,17 @@ Typical installation procedure may look like this:
     $ cd pg_wait_sampling
     $ make USE_PGXS=1
     $ sudo make USE_PGXS=1 install
+
+Then add `shared_preload_libraries = pg_wait_sampling` to `postgresql.conf` and
+restart the server.
+
+To test your installation:
+
     $ make USE_PGXS=1 installcheck
-    $ psql DB -c "CREATE EXTENSION pg_wait_sampling;"
+
+To create the extension in the target database:
+
+    CREATE EXTENSION pg_wait_sampling;
 
 Compilation on Windows is not supported, since the extension uses symbols from PostgreSQL
 that are not exported.
