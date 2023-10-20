@@ -1,7 +1,6 @@
-.deps
 *.o
 *.so
-/results
-.log
-Dockerfile
+/.deps/
 /log/
+/results/
+/tmp_check/

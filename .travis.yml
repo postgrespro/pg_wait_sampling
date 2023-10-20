@@ -1,32 +1,20 @@
-os:
-    - linux
-
-sudo: required
 dist: jammy
-
 language: c
-
-services:
-    - docker
-
-install:
-    - sed -e 's/${CHECK_CODE}/'${CHECK_CODE}/g -e 's/${PG_VERSION}/'${PG_VERSION}/g Dockerfile.tmpl > Dockerfile
-    - docker-compose build
-
-script:
-    - docker-compose run tests
-
 env:
-    - PG_VERSION=11      CHECK_CODE=clang
-    - PG_VERSION=11      CHECK_CODE=cppcheck
-    - PG_VERSION=11      CHECK_CODE=false
-    - PG_VERSION=12      CHECK_CODE=clang
-    - PG_VERSION=12      CHECK_CODE=false
-    - PG_VERSION=13      CHECK_CODE=clang
-    - PG_VERSION=13      CHECK_CODE=false
-    - PG_VERSION=14      CHECK_CODE=clang
-    - PG_VERSION=14      CHECK_CODE=false
-    - PG_VERSION=15      CHECK_CODE=clang
-    - PG_VERSION=15      CHECK_CODE=false
-    - PG_VERSION=16      CHECK_CODE=clang
-    - PG_VERSION=16      CHECK_CODE=false
+- PG_MAJOR=16
+- PG_MAJOR=15
+- PG_MAJOR=14
+- PG_MAJOR=13
+- PG_MAJOR=12
+- PG_MAJOR=11
+before_script:
+- curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+- echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee -a /etc/apt/sources.list
+- sudo apt-get update
+- sudo systemctl stop postgresql
+- sudo apt-get install -y --no-install-recommends postgresql-${PG_MAJOR} postgresql-server-dev-${PG_MAJOR}
+- sudo systemctl stop postgresql
+script: ./run-tests.sh
+after_script:
+- cat regression.diffs
+- cat logfile
