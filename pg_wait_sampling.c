@@ -44,6 +44,7 @@ void		_PG_init(void);
 static bool shmem_initialized = false;
 
 /* Hooks */
+static ExecutorStart_hook_type	prev_ExecutorStart = NULL;
 static ExecutorEnd_hook_type	prev_ExecutorEnd = NULL;
 static planner_hook_type		planner_hook_next = NULL;
 
@@ -67,6 +68,7 @@ static PlannedStmt *pgws_planner_hook(Query *parse,
 		const char *query_string,
 #endif
 		int cursorOptions, ParamListInfo boundParams);
+static void pgws_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgws_ExecutorEnd(QueryDesc *queryDesc);
 
 /*
@@ -402,6 +404,8 @@ _PG_init(void)
 	shmem_startup_hook		= pgws_shmem_startup;
 	planner_hook_next		= planner_hook;
 	planner_hook			= pgws_planner_hook;
+	prev_ExecutorStart		= ExecutorStart_hook;
+	ExecutorStart_hook		= pgws_ExecutorStart;
 	prev_ExecutorEnd		= ExecutorEnd_hook;
 	ExecutorEnd_hook		= pgws_ExecutorEnd;
 }
@@ -904,6 +908,38 @@ pgws_planner_hook(Query *parse,
 				query_string,
 #endif
 			cursorOptions, boundParams);
+}
+
+/*
+ * ExecutorStart hook: save queryId for collector
+ */
+static void
+pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
+{
+	int 		i;
+
+	if (MyProc)
+	{
+		i = MyProc - ProcGlobal->allProcs;
+#if PG_VERSION_NUM >= 110000
+		/*
+		 * since we depend on queryId we need to check that its size
+		 * is uint64 as we coded in pg_wait_sampling
+		 */
+		StaticAssertExpr(sizeof(queryDesc->plannedstmt->queryId) == sizeof(uint64),
+				"queryId size is not uint64");
+#else
+		StaticAssertExpr(sizeof(queryDesc->plannedstmt->queryId) == sizeof(uint32),
+				"queryId size is not uint32");
+#endif
+		if (!pgws_proc_queryids[i])
+			pgws_proc_queryids[i] = queryDesc->plannedstmt->queryId;
+	}
+
+	if (prev_ExecutorStart)
+		prev_ExecutorStart(queryDesc, eflags);
+	else
+		standard_ExecutorStart(queryDesc, eflags);
 }
 
 /*
