@@ -7,7 +7,7 @@
 Introduction
 ------------
 
-PostgreSQL 9.6+ provides an information about current wait event of particular
+PostgreSQL provides information about current wait event of particular
 process.  However, in order to gather descriptive statistics of server
 behavior user have to sample current wait event multiple times.
 `pg_wait_sampling` is an extension for collecting sampling statistics of wait
@@ -47,7 +47,7 @@ PostgreSQL installation. It is available from
 [github](https://github.com/postgrespro/pg_wait_sampling)
 under the same license as
 [PostgreSQL](http://www.postgresql.org/about/licence/)
-and supports PostgreSQL 9.6+.
+and supports PostgreSQL 12+.
 
 Installation
 ------------
@@ -58,10 +58,10 @@ repository: https://download.postgresql.org/pub/repos/
 Manual build
 ------------
 
-`pg_wait_sampling` is PostgreSQL extension which requires PostgreSQL 9.6 or
+`pg_wait_sampling` is PostgreSQL extension which requires PostgreSQL 12 or
 higher. Before build and install you should ensure following:
 
- * PostgreSQL version is 9.6 or higher.
+ * PostgreSQL version is 12 or higher.
  * You have development package of PostgreSQL installed or you built
    PostgreSQL from source.
  * Your PATH variable is configured so that `pg_config` command available, or

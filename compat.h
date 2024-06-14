@@ -17,26 +17,6 @@
 #include "storage/shm_mq.h"
 #include "utils/guc_tables.h"
 
-static inline TupleDesc
-CreateTemplateTupleDescCompat(int nattrs, bool hasoid)
-{
-#if PG_VERSION_NUM >= 120000
-	return CreateTemplateTupleDesc(nattrs);
-#else
-	return CreateTemplateTupleDesc(nattrs, hasoid);
-#endif
-}
-
-static inline void
-shm_mq_detach_compat(shm_mq_handle *mqh, shm_mq *mq)
-{
-#if PG_VERSION_NUM >= 100000
-	shm_mq_detach(mqh);
-#else
-	shm_mq_detach(mq);
-#endif
-}
-
 static inline shm_mq_result
 shm_mq_send_compat(shm_mq_handle *mqh, Size nbytes, const void *data,
 				   bool nowait, bool force_flush)
@@ -61,11 +41,9 @@ InitPostgresCompat(const char *in_dbname, Oid dboid,
 #elif PG_VERSION_NUM >= 150000
 	InitPostgres(in_dbname, dboid, username, useroid, load_session_libraries,
 				 override_allow_connections, out_dbname);
-#elif PG_VERSION_NUM >= 110000
+#else
 	InitPostgres(in_dbname, dboid, username, useroid, out_dbname,
 				 override_allow_connections);
-#else
-	InitPostgres(in_dbname, dboid, username, useroid, out_dbname);
 #endif
 }
 

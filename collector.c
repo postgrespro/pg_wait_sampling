@@ -423,15 +423,9 @@ pgws_collector_main(Datum main_arg)
 		 * Wait until next sample time or request to do something through
 		 * shared memory.
 		 */
-#if PG_VERSION_NUM >= 100000
 		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 				Min(history_period - (int)history_diff,
 					profile_period - (int)profile_diff), PG_WAIT_EXTENSION);
-#else
-		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-				Min(history_period - (int)history_diff,
-					profile_period - (int)profile_diff));
-#endif
 
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
@@ -482,7 +476,7 @@ pgws_collector_main(Datum main_arg)
 					default:
 						Assert(false);
 				}
-				shm_mq_detach_compat(mqh, pgws_collector_mq);
+				shm_mq_detach(mqh);
 			}
 			else if (request == PROFILE_RESET)
 			{

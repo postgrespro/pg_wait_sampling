@@ -18,9 +18,7 @@
 #include "optimizer/planner.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
-#if PG_VERSION_NUM >= 120000
 #include "replication/walsender.h"
-#endif
 #include "storage/ipc.h"
 #include "storage/pg_shmem.h"
 #include "storage/procarray.h"
@@ -119,9 +117,7 @@ get_max_procs_count(void)
 	 * Starting with pg12, wal senders aren't part of MaxConnections anymore
 	 * and have to be accounted for.
 	 */
-#if PG_VERSION_NUM >= 120000
 	count += max_wal_senders;
-#endif		/* pg 12+ */
 #endif		/* pg 15- */
 	/* End of MaxBackends calculation. */
 
@@ -331,16 +327,9 @@ pgws_shmem_startup(void)
 	else
 	{
 		toc = shm_toc_attach(PG_WAIT_SAMPLING_MAGIC, pgws);
-
-#if PG_VERSION_NUM >= 100000
 		pgws_collector_hdr = shm_toc_lookup(toc, 0, false);
 		pgws_collector_mq = shm_toc_lookup(toc, 1, false);
 		pgws_proc_queryids = shm_toc_lookup(toc, 2, false);
-#else
-		pgws_collector_hdr = shm_toc_lookup(toc, 0);
-		pgws_collector_mq = shm_toc_lookup(toc, 1);
-		pgws_proc_queryids = shm_toc_lookup(toc, 2);
-#endif
 	}
 
 	shmem_initialized = true;
@@ -366,7 +355,7 @@ static void
 pgws_cleanup_callback(int code, Datum arg)
 {
 	elog(DEBUG3, "pg_wait_sampling cleanup: detaching shm_mq and releasing queue lock");
-	shm_mq_detach_compat(recv_mqh, recv_mq);
+	shm_mq_detach(recv_mqh);
 	LockRelease(&queueTag, ExclusiveLock, false);
 }
 
@@ -463,7 +452,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		params->ts = GetCurrentTimestamp();
 
 		funcctx->user_fctx = params;
-		tupdesc = CreateTemplateTupleDescCompat(4, false);
+		tupdesc = CreateTemplateTupleDesc(4);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
 						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
@@ -651,7 +640,7 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	PG_END_ENSURE_ERROR_CLEANUP(pgws_cleanup_callback, 0);
 
 	/* We still have to detach and release lock during normal operation. */
-	shm_mq_detach_compat(recv_mqh, recv_mq);
+	shm_mq_detach(recv_mqh);
 	LockRelease(&queueTag, ExclusiveLock, false);
 
 	return result;
@@ -684,7 +673,7 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		funcctx->max_calls = profile->count;
 
 		/* Make tuple descriptor */
-		tupdesc = CreateTemplateTupleDescCompat(5, false);
+		tupdesc = CreateTemplateTupleDesc(5);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
 						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
@@ -801,7 +790,7 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		funcctx->max_calls = history->count;
 
 		/* Make tuple descriptor */
-		tupdesc = CreateTemplateTupleDescCompat(5, false);
+		tupdesc = CreateTemplateTupleDesc(5);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
 						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "sample_ts",
@@ -879,17 +868,6 @@ pgws_planner_hook(Query *parse,
 	if (MyProc)
 	{
 		int i = MyProc - ProcGlobal->allProcs;
-#if PG_VERSION_NUM >= 110000
-		/*
-		 * since we depend on queryId we need to check that its size
-		 * is uint64 as we coded in pg_wait_sampling
-		 */
-		StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint64),
-				"queryId size is not uint64");
-#else
-		StaticAssertExpr(sizeof(parse->queryId) == sizeof(uint32),
-				"queryId size is not uint32");
-#endif
 		if (!pgws_proc_queryids[i])
 			pgws_proc_queryids[i] = parse->queryId;
 
@@ -921,17 +899,6 @@ pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	if (MyProc)
 	{
 		i = MyProc - ProcGlobal->allProcs;
-#if PG_VERSION_NUM >= 110000
-		/*
-		 * since we depend on queryId we need to check that its size
-		 * is uint64 as we coded in pg_wait_sampling
-		 */
-		StaticAssertExpr(sizeof(queryDesc->plannedstmt->queryId) == sizeof(uint64),
-				"queryId size is not uint64");
-#else
-		StaticAssertExpr(sizeof(queryDesc->plannedstmt->queryId) == sizeof(uint32),
-				"queryId size is not uint32");
-#endif
 		if (!pgws_proc_queryids[i])
 			pgws_proc_queryids[i] = queryDesc->plannedstmt->queryId;
 	}
