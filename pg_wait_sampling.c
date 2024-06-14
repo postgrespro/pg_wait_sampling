@@ -43,8 +43,13 @@ static bool shmem_initialized = false;
 
 /* Hooks */
 static ExecutorStart_hook_type	prev_ExecutorStart = NULL;
+static ExecutorRun_hook_type 	prev_ExecutorRun = NULL;
+static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
 static ExecutorEnd_hook_type	prev_ExecutorEnd = NULL;
 static planner_hook_type		planner_hook_next = NULL;
+
+/* Current nesting depth of planner/Executor calls */
+static int nesting_level = 0;
 
 /* Pointers to shared memory objects */
 shm_mq				   *pgws_collector_mq = NULL;
@@ -67,6 +72,10 @@ static PlannedStmt *pgws_planner_hook(Query *parse,
 #endif
 		int cursorOptions, ParamListInfo boundParams);
 static void pgws_ExecutorStart(QueryDesc *queryDesc, int eflags);
+static void pgws_ExecutorRun(QueryDesc *queryDesc,
+							 ScanDirection direction,
+							 uint64 count, bool execute_once);
+static void pgws_ExecutorFinish(QueryDesc *queryDesc);
 static void pgws_ExecutorEnd(QueryDesc *queryDesc);
 
 /*
@@ -395,6 +404,10 @@ _PG_init(void)
 	planner_hook			= pgws_planner_hook;
 	prev_ExecutorStart		= ExecutorStart_hook;
 	ExecutorStart_hook		= pgws_ExecutorStart;
+	prev_ExecutorRun		= ExecutorRun_hook;
+	ExecutorRun_hook		= pgws_ExecutorRun;
+	prev_ExecutorFinish		= ExecutorFinish_hook;
+	ExecutorFinish_hook		= pgws_ExecutorFinish;
 	prev_ExecutorEnd		= ExecutorEnd_hook;
 	ExecutorEnd_hook		= pgws_ExecutorEnd;
 }
@@ -865,23 +878,41 @@ pgws_planner_hook(Query *parse,
 				  int cursorOptions,
 				  ParamListInfo boundParams)
 {
+	PlannedStmt *result;
 	int i = MyProc - ProcGlobal->allProcs;
-	if (!pgws_proc_queryids[i])
+	if (nesting_level == 0)
 		pgws_proc_queryids[i] = parse->queryId;
 
-	/* Invoke original hook if needed */
-	if (planner_hook_next)
-		return planner_hook_next(parse,
+	nesting_level++;
+	PG_TRY();
+	{
+		/* Invoke original hook if needed */
+		if (planner_hook_next)
+			result = planner_hook_next(parse,
 #if PG_VERSION_NUM >= 130000
-				query_string,
+					query_string,
 #endif
-				cursorOptions, boundParams);
+					cursorOptions, boundParams);
+		else
+			result = standard_planner(parse,
+#if PG_VERSION_NUM >= 130000
+					query_string,
+#endif
+					cursorOptions, boundParams);
+		nesting_level--;
+		if (nesting_level == 0)
+			pgws_proc_queryids[i] = UINT64CONST(0);
+	}
+	PG_CATCH();
+	{
+		nesting_level--;
+		if (nesting_level == 0)
+			pgws_proc_queryids[i] = UINT64CONST(0);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
-	return standard_planner(parse,
-#if PG_VERSION_NUM >= 130000
-				query_string,
-#endif
-			cursorOptions, boundParams);
+	return result;
 }
 
 /*
@@ -891,7 +922,7 @@ static void
 pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
 	int i = MyProc - ProcGlobal->allProcs;
-	if (!pgws_proc_queryids[i])
+	if (nesting_level == 0)
 		pgws_proc_queryids[i] = queryDesc->plannedstmt->queryId;
 
 	if (prev_ExecutorStart)
@@ -900,13 +931,57 @@ pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 		standard_ExecutorStart(queryDesc, eflags);
 }
 
+static void
+pgws_ExecutorRun(QueryDesc *queryDesc,
+				ScanDirection direction,
+				uint64 count, bool execute_once)
+{
+	nesting_level++;
+	PG_TRY();
+	{
+		if (prev_ExecutorRun)
+			prev_ExecutorRun(queryDesc, direction, count, execute_once);
+		else
+			standard_ExecutorRun(queryDesc, direction, count, execute_once);
+		nesting_level--;
+	}
+	PG_CATCH();
+	{
+		nesting_level--;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+static void
+pgws_ExecutorFinish(QueryDesc *queryDesc)
+{
+	nesting_level++;
+	PG_TRY();
+	{
+		if (prev_ExecutorFinish)
+			prev_ExecutorFinish(queryDesc);
+		else
+			standard_ExecutorFinish(queryDesc);
+		nesting_level--;
+	}
+	PG_CATCH();
+	{
+		nesting_level--;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
 /*
  * ExecutorEnd hook: clear queryId
  */
 static void
 pgws_ExecutorEnd(QueryDesc *queryDesc)
 {
-	pgws_proc_queryids[MyProc - ProcGlobal->allProcs] = UINT64CONST(0);
+	int i = MyProc - ProcGlobal->allProcs;
+	if (nesting_level == 0)
+		pgws_proc_queryids[i] = UINT64CONST(0);
 
 	if (prev_ExecutorEnd)
 		prev_ExecutorEnd(queryDesc);
