@@ -163,6 +163,9 @@ probe_waits(History *observations, HTAB *profile_hash,
 					   *observation;
 		PGPROC		   *proc = &ProcGlobal->allProcs[i];
 
+		if (proc->wait_event_info == 0 && !pgws_collector_hdr->sampleCpu)
+			continue;
+
 		if (proc->pid == 0 || proc->procLatch.owner_pid == 0 || proc->pid == MyProcPid)
 			continue;
 

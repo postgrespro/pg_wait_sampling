@@ -68,6 +68,7 @@ typedef struct
 	int				profilePeriod;
 	bool			profilePid;
 	bool			profileQueries;
+	bool			sampleCpu;
 } CollectorShmqHeader;
 
 /* pg_wait_sampling.c */

@@ -198,7 +198,8 @@ setup_gucs()
 				history_period_found = false,
 				profile_period_found = false,
 				profile_pid_found = false,
-				profile_queries_found = false;
+				profile_queries_found = false,
+				sample_cpu_found = false;
 
 	get_guc_variables_compat(&guc_vars, &numOpts);
 
@@ -240,6 +241,12 @@ setup_gucs()
 			var->_bool.variable = &pgws_collector_hdr->profileQueries;
 			pgws_collector_hdr->profileQueries = true;
 		}
+		else if (!strcmp(name, "pg_wait_sampling.sample_cpu"))
+		{
+			sample_cpu_found = true;
+			var->_bool.variable = &pgws_collector_hdr->sampleCpu;
+			pgws_collector_hdr->sampleCpu = false;
+		}
 	}
 
 	if (!history_size_found)
@@ -272,11 +279,18 @@ setup_gucs()
 				&pgws_collector_hdr->profileQueries, true,
 				PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
 
+	if (!sample_cpu_found)
+		DefineCustomBoolVariable("pg_wait_sampling.sample_cpu",
+		                         "Sets whether not waiting backends should be sampled.", NULL,
+		                         &pgws_collector_hdr->sampleCpu, false,
+		                         PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
+
 	if (history_size_found
 		|| history_period_found
 		|| profile_period_found
 		|| profile_pid_found
-		|| profile_queries_found)
+		|| profile_queries_found
+	    || sample_cpu_found)
 	{
 		ProcessConfigFile(PGC_SIGHUP);
 	}
@@ -501,7 +515,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			{
 				PGPROC *proc = &ProcGlobal->allProcs[i];
 
-				if (proc != NULL && proc->pid != 0 && proc->wait_event_info)
+				if (proc != NULL && proc->pid != 0 && (proc->wait_event_info || pgws_collector_hdr->sampleCpu))
 				{
 					params->items[j].pid = proc->pid;
 					params->items[j].wait_event_info = proc->wait_event_info;
