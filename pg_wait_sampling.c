@@ -865,13 +865,9 @@ pgws_planner_hook(Query *parse,
 				  int cursorOptions,
 				  ParamListInfo boundParams)
 {
-	if (MyProc)
-	{
-		int i = MyProc - ProcGlobal->allProcs;
-		if (!pgws_proc_queryids[i])
-			pgws_proc_queryids[i] = parse->queryId;
-
-	}
+	int i = MyProc - ProcGlobal->allProcs;
+	if (!pgws_proc_queryids[i])
+		pgws_proc_queryids[i] = parse->queryId;
 
 	/* Invoke original hook if needed */
 	if (planner_hook_next)
@@ -894,14 +890,9 @@ pgws_planner_hook(Query *parse,
 static void
 pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-	int 		i;
-
-	if (MyProc)
-	{
-		i = MyProc - ProcGlobal->allProcs;
-		if (!pgws_proc_queryids[i])
-			pgws_proc_queryids[i] = queryDesc->plannedstmt->queryId;
-	}
+	int i = MyProc - ProcGlobal->allProcs;
+	if (!pgws_proc_queryids[i])
+		pgws_proc_queryids[i] = queryDesc->plannedstmt->queryId;
 
 	if (prev_ExecutorStart)
 		prev_ExecutorStart(queryDesc, eflags);
@@ -915,8 +906,7 @@ pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 static void
 pgws_ExecutorEnd(QueryDesc *queryDesc)
 {
-	if (MyProc)
-		pgws_proc_queryids[MyProc - ProcGlobal->allProcs] = UINT64CONST(0);
+	pgws_proc_queryids[MyProc - ProcGlobal->allProcs] = UINT64CONST(0);
 
 	if (prev_ExecutorEnd)
 		prev_ExecutorEnd(queryDesc);
