@@ -12,7 +12,7 @@ before_script:
 - echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee -a /etc/apt/sources.list
 - sudo apt-get update
 - sudo systemctl stop postgresql
-- sudo apt-get install -y --no-install-recommends postgresql-${PG_MAJOR} postgresql-server-dev-${PG_MAJOR}
+- sudo apt-get install -y --no-install-recommends postgresql-client-${PG_MAJOR} postgresql-${PG_MAJOR} postgresql-server-dev-${PG_MAJOR}
 - sudo systemctl stop postgresql
 script: ./run-tests.sh
 after_script:
