@@ -7,7 +7,6 @@ env:
 - PG_MAJOR=14
 - PG_MAJOR=13
 - PG_MAJOR=12
-- PG_MAJOR=11
 before_script:
 - curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
 - echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee -a /etc/apt/sources.list
