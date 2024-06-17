@@ -450,6 +450,28 @@ search_proc(int pid)
 	return NULL;
 }
 
+/*
+ * Decide whether this PGPROC entry should be included in profiles and output
+ * views.
+ */
+bool
+pgws_should_sample_proc(PGPROC *proc)
+{
+	if (proc->wait_event_info == 0 && !pgws_collector_hdr->sampleCpu)
+		return false;
+
+	/*
+	 * On PostgreSQL versions < 17 the PGPROC->pid field is not reset on
+	 * process exit. This would lead to such processes getting counted for
+	 * null wait events. So instead we make use of DisownLatch() resetting
+	 * owner_pid during ProcKill().
+	 */
+	if (proc->pid == 0 || proc->procLatch.owner_pid == 0 || proc->pid == MyProcPid)
+		return false;
+
+	return true;
+}
+
 typedef struct
 {
 	HistoryItem	   *items;
@@ -515,11 +537,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			{
 				PGPROC *proc = &ProcGlobal->allProcs[i];
 
-				if (proc->wait_event_info == 0 && !pgws_collector_hdr->sampleCpu)
-					continue;
-
-				/* See corresponding comment in probe_waits() */
-				if (proc->pid == 0 || proc->procLatch.owner_pid == 0 || proc->pid == MyProcPid)
+				if (!pgws_should_sample_proc(proc))
 					continue;
 
 				params->items[j].pid = proc->pid;
