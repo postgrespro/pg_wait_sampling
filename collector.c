@@ -166,6 +166,12 @@ probe_waits(History *observations, HTAB *profile_hash,
 		if (proc->wait_event_info == 0 && !pgws_collector_hdr->sampleCpu)
 			continue;
 
+		/*
+		 * On PostgreSQL versions < 17 the PGPROC->pid field is not reset on
+		 * process exit. This would lead to such processes getting counted
+		 * for null wait events. So instead we make use of DisownLatch()
+		 * resetting owner_pid during ProcKill().
+		 */
 		if (proc->pid == 0 || proc->procLatch.owner_pid == 0 || proc->pid == MyProcPid)
 			continue;
 
