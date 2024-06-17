@@ -149,7 +149,7 @@ be always zero and corresponding row contain samples among all the processes.
 While `pg_wait_sampling.profile_queries` is set to false `queryid` field in
 views will be zero.
 
-If `pg_wait_sampling.sample_cpu` is set to true hen processes that are not
+If `pg_wait_sampling.sample_cpu` is set to true then processes that are not
 waiting on anything are also sampled. The wait event columns for such processes
 will be NULL.
 
