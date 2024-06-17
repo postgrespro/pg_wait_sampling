@@ -515,13 +515,17 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			{
 				PGPROC *proc = &ProcGlobal->allProcs[i];
 
-				if (proc != NULL && proc->pid != 0 && (proc->wait_event_info || pgws_collector_hdr->sampleCpu))
-				{
-					params->items[j].pid = proc->pid;
-					params->items[j].wait_event_info = proc->wait_event_info;
-					params->items[j].queryId = pgws_proc_queryids[i];
-					j++;
-				}
+				if (proc->wait_event_info == 0 && !pgws_collector_hdr->sampleCpu)
+					continue;
+
+				/* See corresponding comment in probe_waits() */
+				if (proc->pid == 0 || proc->procLatch.owner_pid == 0 || proc->pid == MyProcPid)
+					continue;
+
+				params->items[j].pid = proc->pid;
+				params->items[j].wait_event_info = proc->wait_event_info;
+				params->items[j].queryId = pgws_proc_queryids[i];
+				j++;
 			}
 			funcctx->max_calls = j;
 		}
