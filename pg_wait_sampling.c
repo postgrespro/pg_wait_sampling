@@ -245,7 +245,7 @@ setup_gucs()
 		{
 			sample_cpu_found = true;
 			var->_bool.variable = &pgws_collector_hdr->sampleCpu;
-			pgws_collector_hdr->sampleCpu = false;
+			pgws_collector_hdr->sampleCpu = true;
 		}
 	}
 
@@ -282,7 +282,7 @@ setup_gucs()
 	if (!sample_cpu_found)
 		DefineCustomBoolVariable("pg_wait_sampling.sample_cpu",
 		                         "Sets whether not waiting backends should be sampled.", NULL,
-		                         &pgws_collector_hdr->sampleCpu, false,
+		                         &pgws_collector_hdr->sampleCpu, true,
 		                         PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
 
 	if (history_size_found
