@@ -163,10 +163,7 @@ probe_waits(History *observations, HTAB *profile_hash,
 					   *observation;
 		PGPROC		   *proc = &ProcGlobal->allProcs[i];
 
-		if (proc->pid == 0)
-			continue;
-
-		if (proc->wait_event_info == 0)
+		if (!pgws_should_sample_proc(proc))
 			continue;
 
 		/* Collect next wait event sample */

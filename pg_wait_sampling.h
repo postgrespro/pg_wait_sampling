@@ -63,6 +63,7 @@ typedef struct
 	int				profilePeriod;
 	bool			profilePid;
 	bool			profileQueries;
+	bool			sampleCpu;
 } CollectorShmqHeader;
 
 /* pg_wait_sampling.c */
@@ -70,6 +71,7 @@ extern CollectorShmqHeader *pgws_collector_hdr;
 extern shm_mq			   *pgws_collector_mq;
 extern uint64			   *pgws_proc_queryids;
 extern void pgws_init_lock_tag(LOCKTAG *tag, uint32 lock);
+extern bool pgws_should_sample_proc(PGPROC *proc);
 
 /* collector.c */
 extern void pgws_register_wait_collector(void);
