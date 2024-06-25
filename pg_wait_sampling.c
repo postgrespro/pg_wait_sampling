@@ -95,6 +95,35 @@ static void pgws_ProcessUtility(PlannedStmt *pstmt,
 #endif
 								);
 
+/*---- GUC variables ----*/
+
+typedef enum
+{
+	PGWS_PROFILE_QUERIES_NONE,			/* profile no statements */
+	PGWS_PROFILE_QUERIES_TOP,			/* only top level statements */
+	PGWS_PROFILE_QUERIES_ALL			/* all statements, including nested ones */
+} PGWSTrackLevel;
+
+static const struct config_enum_entry pgws_profile_queries_options[] =
+{
+	{"none", 	PGWS_PROFILE_QUERIES_NONE, false},
+	{"off", 	PGWS_PROFILE_QUERIES_NONE, false},
+	{"no", 		PGWS_PROFILE_QUERIES_NONE, false},
+	{"false", 	PGWS_PROFILE_QUERIES_NONE, false},
+	{"0", 		PGWS_PROFILE_QUERIES_NONE, false},
+	{"top", 	PGWS_PROFILE_QUERIES_TOP, false},
+	{"on", 		PGWS_PROFILE_QUERIES_TOP, false},
+	{"yes", 	PGWS_PROFILE_QUERIES_TOP, false},
+	{"true", 	PGWS_PROFILE_QUERIES_TOP, false},
+	{"1", 		PGWS_PROFILE_QUERIES_TOP, false},
+	{"all", 	PGWS_PROFILE_QUERIES_ALL, false},
+	{NULL, 		0, false}
+};
+
+#define pgws_enabled(level) \
+	((pgws_collector_hdr->profileQueries == PGWS_PROFILE_QUERIES_ALL) || \
+	 (pgws_collector_hdr->profileQueries == PGWS_PROFILE_QUERIES_TOP && (level) == 0))
+
 /*
  * Calculate max processes count.
  *
@@ -186,6 +215,14 @@ shmem_int_guc_check_hook(int *newval, void **extra, GucSource source)
 }
 
 static bool
+shmem_enum_guc_check_hook(int *newval, void **extra, GucSource source)
+{
+	if (UsedShmemSegAddr == NULL)
+		return false;
+	return true;
+}
+
+static bool
 shmem_bool_guc_check_hook(bool *newval, void **extra, GucSource source)
 {
 	if (UsedShmemSegAddr == NULL)
@@ -260,8 +297,8 @@ setup_gucs()
 		else if (!strcmp(name, "pg_wait_sampling.profile_queries"))
 		{
 			profile_queries_found = true;
-			var->_bool.variable = &pgws_collector_hdr->profileQueries;
-			pgws_collector_hdr->profileQueries = true;
+			var->_enum.variable = &pgws_collector_hdr->profileQueries;
+			pgws_collector_hdr->profileQueries = PGWS_PROFILE_QUERIES_TOP;
 		}
 		else if (!strcmp(name, "pg_wait_sampling.sample_cpu"))
 		{
@@ -296,10 +333,10 @@ setup_gucs()
 				PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
 
 	if (!profile_queries_found)
-		DefineCustomBoolVariable("pg_wait_sampling.profile_queries",
+		DefineCustomEnumVariable("pg_wait_sampling.profile_queries",
 				"Sets whether profile should be collected per query.", NULL,
-				&pgws_collector_hdr->profileQueries, true,
-				PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
+				&pgws_collector_hdr->profileQueries, PGWS_PROFILE_QUERIES_TOP, pgws_profile_queries_options,
+				PGC_SUSET, 0, shmem_enum_guc_check_hook, NULL, NULL);
 
 	if (!sample_cpu_found)
 		DefineCustomBoolVariable("pg_wait_sampling.sample_cpu",
@@ -354,6 +391,8 @@ pgws_shmem_startup(void)
 
 		pgws_collector_hdr = shm_toc_allocate(toc, sizeof(CollectorShmqHeader));
 		shm_toc_insert(toc, 0, pgws_collector_hdr);
+		/* needed to please check_GUC_init */
+		pgws_collector_hdr->profileQueries = PGWS_PROFILE_QUERIES_TOP;
 		pgws_collector_mq = shm_toc_allocate(toc, COLLECTOR_QUEUE_SIZE);
 		shm_toc_insert(toc, 1, pgws_collector_mq);
 		pgws_proc_queryids = shm_toc_allocate(toc,
@@ -933,10 +972,15 @@ pgws_planner_hook(Query *parse,
 				  int cursorOptions,
 				  ParamListInfo boundParams)
 {
-	PlannedStmt *result;
-	int i = MyProc - ProcGlobal->allProcs;
-	if (nesting_level == 0)
+	PlannedStmt    *result;
+	int				i = MyProc - ProcGlobal->allProcs;
+	uint64			save_queryId = 0;
+
+	if (pgws_enabled(nesting_level))
+	{
+		save_queryId = pgws_proc_queryids[i];
 		pgws_proc_queryids[i] = parse->queryId;
+	}
 
 	nesting_level++;
 	PG_TRY();
@@ -957,12 +1001,16 @@ pgws_planner_hook(Query *parse,
 		nesting_level--;
 		if (nesting_level == 0)
 			pgws_proc_queryids[i] = UINT64CONST(0);
+		else if (pgws_enabled(nesting_level))
+			pgws_proc_queryids[i] = save_queryId;
 	}
 	PG_CATCH();
 	{
 		nesting_level--;
 		if (nesting_level == 0)
 			pgws_proc_queryids[i] = UINT64CONST(0);
+		else if (pgws_enabled(nesting_level))
+			pgws_proc_queryids[i] = save_queryId;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -977,9 +1025,8 @@ static void
 pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
 	int i = MyProc - ProcGlobal->allProcs;
-	if (nesting_level == 0)
+	if (pgws_enabled(nesting_level))
 		pgws_proc_queryids[i] = queryDesc->plannedstmt->queryId;
-
 	if (prev_ExecutorStart)
 		prev_ExecutorStart(queryDesc, eflags);
 	else
@@ -991,6 +1038,9 @@ pgws_ExecutorRun(QueryDesc *queryDesc,
 				ScanDirection direction,
 				uint64 count, bool execute_once)
 {
+	int		i = MyProc - ProcGlobal->allProcs;
+	uint64	save_queryId = pgws_proc_queryids[i];
+
 	nesting_level++;
 	PG_TRY();
 	{
@@ -999,10 +1049,18 @@ pgws_ExecutorRun(QueryDesc *queryDesc,
 		else
 			standard_ExecutorRun(queryDesc, direction, count, execute_once);
 		nesting_level--;
+		if (nesting_level == 0)
+			pgws_proc_queryids[i] = UINT64CONST(0);
+		else
+			pgws_proc_queryids[i] = save_queryId;
 	}
 	PG_CATCH();
 	{
 		nesting_level--;
+		if (nesting_level == 0)
+			pgws_proc_queryids[i] = UINT64CONST(0);
+		else
+			pgws_proc_queryids[i] = save_queryId;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1011,6 +1069,9 @@ pgws_ExecutorRun(QueryDesc *queryDesc,
 static void
 pgws_ExecutorFinish(QueryDesc *queryDesc)
 {
+	int		i = MyProc - ProcGlobal->allProcs;
+	uint64	save_queryId = pgws_proc_queryids[i];
+
 	nesting_level++;
 	PG_TRY();
 	{
@@ -1019,10 +1080,15 @@ pgws_ExecutorFinish(QueryDesc *queryDesc)
 		else
 			standard_ExecutorFinish(queryDesc);
 		nesting_level--;
+		if (nesting_level == 0)
+			pgws_proc_queryids[i] = UINT64CONST(0);
+		else
+			pgws_proc_queryids[i] = save_queryId;
 	}
 	PG_CATCH();
 	{
 		nesting_level--;
+		pgws_proc_queryids[i] = save_queryId;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1061,10 +1127,14 @@ pgws_ProcessUtility(PlannedStmt *pstmt,
 #endif
 					)
 {
-	int i = MyProc - ProcGlobal->allProcs;
+	int				i = MyProc - ProcGlobal->allProcs;
+	uint64			save_queryId = 0;
 
-	if (nesting_level == 0)
+	if (pgws_enabled(nesting_level))
+	{
+		save_queryId = pgws_proc_queryids[i];
 		pgws_proc_queryids[i] = pstmt->queryId;
+	}
 
 	nesting_level++;
 	PG_TRY();
@@ -1098,12 +1168,16 @@ pgws_ProcessUtility(PlannedStmt *pstmt,
 		nesting_level--;
 		if (nesting_level == 0)
 			pgws_proc_queryids[i] = UINT64CONST(0);
+		else if (pgws_enabled(nesting_level))
+			pgws_proc_queryids[i] = save_queryId;
 	}
 	PG_CATCH();
 	{
 		nesting_level--;
 		if (nesting_level == 0)
 			pgws_proc_queryids[i] = UINT64CONST(0);
+		else if (pgws_enabled(nesting_level))
+			pgws_proc_queryids[i] = save_queryId;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

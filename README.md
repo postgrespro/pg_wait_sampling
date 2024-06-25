@@ -139,15 +139,16 @@ GUCs.
 | pg_wait_sampling.history_period  | int4      | Period for history sampling in milliseconds |            10 |
 | pg_wait_sampling.profile_period  | int4      | Period for profile sampling in milliseconds |            10 |
 | pg_wait_sampling.profile_pid     | bool      | Whether profile should be per pid           |          true |
-| pg_wait_sampling.profile_queries | bool      | Whether profile should be per query         |          true |
+| pg_wait_sampling.profile_queries | enum      | Whether profile should be per query         |           top |
 | pg_wait_sampling.sample_cpu      | bool      | Whether on CPU backends should be sampled   |          true |
 
 If `pg_wait_sampling.profile_pid` is set to false, sampling profile wouldn't be
 collected in per-process manner.  In this case the value of pid could would
 be always zero and corresponding row contain samples among all the processes.
 
-While `pg_wait_sampling.profile_queries` is set to false `queryid` field in
-views will be zero.
+If `pg_wait_sampling.profile_queries` is set to `none`, `queryid` field in
+views will be zero. If it is set to `top`, queryIds only of top level statements
+are recorded. If it is set to `all`, queryIds of nested statements are recorded.
 
 If `pg_wait_sampling.sample_cpu` is set to true then processes that are not
 waiting on anything are also sampled. The wait event columns for such processes
