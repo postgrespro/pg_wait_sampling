@@ -25,6 +25,7 @@
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
 #include "storage/spin.h"
+#include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
 #include "utils/guc_tables.h"
@@ -47,6 +48,7 @@ static ExecutorRun_hook_type 	prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
 static ExecutorEnd_hook_type	prev_ExecutorEnd = NULL;
 static planner_hook_type		planner_hook_next = NULL;
+static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 
 /* Current nesting depth of planner/Executor calls */
 static int nesting_level = 0;
@@ -77,6 +79,21 @@ static void pgws_ExecutorRun(QueryDesc *queryDesc,
 							 uint64 count, bool execute_once);
 static void pgws_ExecutorFinish(QueryDesc *queryDesc);
 static void pgws_ExecutorEnd(QueryDesc *queryDesc);
+static void pgws_ProcessUtility(PlannedStmt *pstmt,
+								const char *queryString,
+#if PG_VERSION_NUM >= 140000
+								bool readOnlyTree,
+#endif
+								ProcessUtilityContext context,
+								ParamListInfo params,
+								QueryEnvironment *queryEnv,
+								DestReceiver *dest,
+#if PG_VERSION_NUM >= 130000
+								QueryCompletion *qc
+#else
+								char *completionTag
+#endif
+								);
 
 /*
  * Calculate max processes count.
@@ -424,6 +441,8 @@ _PG_init(void)
 	ExecutorFinish_hook		= pgws_ExecutorFinish;
 	prev_ExecutorEnd		= ExecutorEnd_hook;
 	ExecutorEnd_hook		= pgws_ExecutorEnd;
+	prev_ProcessUtility		= ProcessUtility_hook;
+	ProcessUtility_hook		= pgws_ProcessUtility;
 }
 
 /*
@@ -1023,4 +1042,69 @@ pgws_ExecutorEnd(QueryDesc *queryDesc)
 		prev_ExecutorEnd(queryDesc);
 	else
 		standard_ExecutorEnd(queryDesc);
+}
+
+static void
+pgws_ProcessUtility(PlannedStmt *pstmt,
+					const char *queryString,
+#if PG_VERSION_NUM >= 140000
+					bool readOnlyTree,
+#endif
+					ProcessUtilityContext context,
+					ParamListInfo params,
+					QueryEnvironment *queryEnv,
+					DestReceiver *dest,
+#if PG_VERSION_NUM >= 130000
+					QueryCompletion *qc
+#else
+					char *completionTag
+#endif
+					)
+{
+	int i = MyProc - ProcGlobal->allProcs;
+
+	if (nesting_level == 0)
+		pgws_proc_queryids[i] = pstmt->queryId;
+
+	nesting_level++;
+	PG_TRY();
+	{
+		if (prev_ProcessUtility)
+			prev_ProcessUtility (pstmt, queryString,
+#if PG_VERSION_NUM >= 140000
+								 readOnlyTree,
+#endif
+								 context, params, queryEnv,
+								 dest,
+#if PG_VERSION_NUM >= 130000
+								 qc
+#else
+								 completionTag
+#endif
+								 );
+		else
+			standard_ProcessUtility(pstmt, queryString,
+#if PG_VERSION_NUM >= 140000
+									readOnlyTree,
+#endif
+									context, params, queryEnv,
+									dest,
+#if PG_VERSION_NUM >= 130000
+									qc
+#else
+									completionTag
+#endif
+									);
+		nesting_level--;
+		if (nesting_level == 0)
+			pgws_proc_queryids[i] = UINT64CONST(0);
+	}
+	PG_CATCH();
+	{
+		nesting_level--;
+		if (nesting_level == 0)
+			pgws_proc_queryids[i] = UINT64CONST(0);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 }
