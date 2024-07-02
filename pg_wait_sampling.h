@@ -62,7 +62,7 @@ typedef struct
 	int				historyPeriod;
 	int				profilePeriod;
 	bool			profilePid;
-	bool			profileQueries;
+	int				profileQueries;
 	bool			sampleCpu;
 } CollectorShmqHeader;
 
