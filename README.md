@@ -18,6 +18,10 @@ The module must be loaded by adding `pg_wait_sampling` to
 shared memory and launches background worker.  This means that a server restart
 is needed to add or remove the module.
 
+When used with `pg_stat_statements` it is recommended to put `pg_stat_statements`
+before `pg_wait_sampling` in `shared_preload_libraries` so queryIds of
+utility statements are not rewritten by the former.
+
 When `pg_wait_sampling` is enabled, it collects two kinds of statistics.
 
  * History of waits events.  It's implemented as in-memory ring buffer where
