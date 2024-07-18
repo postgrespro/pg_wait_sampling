@@ -348,7 +348,7 @@ pgws_collector_main(Datum main_arg)
 	pqsignal(SIGTERM, handle_sigterm);
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
 	BackgroundWorkerUnblockSignals();
-	InitPostgresCompat(NULL, InvalidOid, NULL, InvalidOid, false, false, NULL);
+	InitPostgresCompat(NULL, InvalidOid, NULL, InvalidOid, 0, NULL);
 	SetProcessingMode(NormalProcessing);
 
 	/* Make pg_wait_sampling recognisable in pg_stat_activity */

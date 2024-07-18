@@ -28,22 +28,26 @@ shm_mq_send_compat(shm_mq_handle *mqh, Size nbytes, const void *data,
 #endif
 }
 
+#if PG_VERSION_NUM < 170000
+#define INIT_PG_LOAD_SESSION_LIBS		0x0001
+#define INIT_PG_OVERRIDE_ALLOW_CONNS	0x0002
+#endif
+
 static inline void
 InitPostgresCompat(const char *in_dbname, Oid dboid,
 				   const char *username, Oid useroid,
-				   bool load_session_libraries,
-				   bool override_allow_connections,
+				   bits32 flags,
 				   char *out_dbname)
 {
 #if PG_VERSION_NUM >= 170000
-	InitPostgres(in_dbname, dboid, username, useroid, (load_session_libraries ? INIT_PG_LOAD_SESSION_LIBS : 0) |
-				 (override_allow_connections ? INIT_PG_OVERRIDE_ALLOW_CONNS : 0), out_dbname);
+	InitPostgres(in_dbname, dboid, username, useroid, flags, out_dbname);
 #elif PG_VERSION_NUM >= 150000
-	InitPostgres(in_dbname, dboid, username, useroid, load_session_libraries,
-				 override_allow_connections, out_dbname);
+	InitPostgres(in_dbname, dboid, username, useroid,
+				 flags & INIT_PG_LOAD_SESSION_LIBS,
+				 flags & INIT_PG_OVERRIDE_ALLOW_CONNS, out_dbname);
 #else
 	InitPostgres(in_dbname, dboid, username, useroid, out_dbname,
-				 override_allow_connections);
+				 flags & INIT_PG_OVERRIDE_ALLOW_CONNS);
 #endif
 }
 
