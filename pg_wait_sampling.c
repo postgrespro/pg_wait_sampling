@@ -76,7 +76,11 @@ static PlannedStmt *pgws_planner_hook(Query *parse,
 static void pgws_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgws_ExecutorRun(QueryDesc *queryDesc,
 							 ScanDirection direction,
-							 uint64 count, bool execute_once);
+							 uint64 count
+#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
+							 , bool execute_once
+#endif
+							 );
 static void pgws_ExecutorFinish(QueryDesc *queryDesc);
 static void pgws_ExecutorEnd(QueryDesc *queryDesc);
 static void pgws_ProcessUtility(PlannedStmt *pstmt,
@@ -1036,7 +1040,11 @@ pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 static void
 pgws_ExecutorRun(QueryDesc *queryDesc,
 				ScanDirection direction,
-				uint64 count, bool execute_once)
+				uint64 count
+#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
+				, bool execute_once
+#endif
+				)
 {
 	int		i = MyProc - ProcGlobal->allProcs;
 	uint64	save_queryId = pgws_proc_queryids[i];
@@ -1045,9 +1053,17 @@ pgws_ExecutorRun(QueryDesc *queryDesc,
 	PG_TRY();
 	{
 		if (prev_ExecutorRun)
+#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
 			prev_ExecutorRun(queryDesc, direction, count, execute_once);
+#else
+			prev_ExecutorRun(queryDesc, direction, count);
+#endif
 		else
+#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
 			standard_ExecutorRun(queryDesc, direction, count, execute_once);
+#else
+			standard_ExecutorRun(queryDesc, direction, count);
+#endif
 		nesting_level--;
 		if (nesting_level == 0)
 			pgws_proc_queryids[i] = UINT64CONST(0);
