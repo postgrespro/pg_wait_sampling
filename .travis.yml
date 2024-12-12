@@ -1,16 +1,30 @@
 dist: jammy
 language: c
 env:
-- PG_MAJOR=17 BETA=1
+- PG_MAJOR=18 SNAPSHOT=1
+- PG_MAJOR=17
 - PG_MAJOR=16
 - PG_MAJOR=15
 - PG_MAJOR=14
 - PG_MAJOR=13
-- PG_MAJOR=12
 before_script:
 - curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-- echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee -a /etc/apt/sources.list
-- if [ -n "${BETA}" ]; then echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main ${PG_MAJOR}" | sudo tee -a /etc/apt/sources.list; fi
+- |
+  if [ -n "${SNAPSHOT}" ]; then
+    echo "deb https://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg-snapshot main ${PG_MAJOR}"
+  elif [ -n "${BETA}" ]; then
+    echo "deb https://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main ${PG_MAJOR}"
+  else
+    echo "deb https://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main"
+  fi | sudo tee /etc/apt/sources.list.d/postgresql.list
+- |
+  if [ -n "${SNAPSHOT}" ]; then
+    {
+      echo "Package: *"
+      echo "Pin: origin apt.postgresql.org"
+      echo "Pin-Priority: 600"
+    } | sudo tee /etc/apt/preferences.d/pgdg.pref
+  fi
 - sudo apt-get update
 - sudo systemctl stop postgresql
 - sudo apt-get install -y --no-install-recommends postgresql-client-${PG_MAJOR} postgresql-${PG_MAJOR} postgresql-server-dev-${PG_MAJOR}
