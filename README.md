@@ -158,9 +158,9 @@ If `pg_wait_sampling.sample_cpu` is set to true then processes that are not
 waiting on anything are also sampled. The wait event columns for such processes
 will be NULL.
 
-These GUCs are allowed to be changed by superuser.  Also, they are placed into
-shared memory.  Thus, they could be changed from any backend and affects worker
-runtime.
+Values of these GUC variables can be changed only in config file or with ALTER SYSTEM.
+Then you need to reload server's configuration (such as with pg_reload_conf function)
+for changes to take effect.
 
 See
 [PostgreSQL documentation](http://www.postgresql.org/docs/devel/static/monitoring-stats.html#WAIT-EVENT-TABLE)

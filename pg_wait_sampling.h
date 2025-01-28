@@ -58,13 +58,15 @@ typedef struct
 {
 	Latch		   *latch;
 	SHMRequest		request;
-	int				historySize;
-	int				historyPeriod;
-	int				profilePeriod;
-	bool			profilePid;
-	int				profileQueries;
-	bool			sampleCpu;
 } CollectorShmqHeader;
+
+/* GUC variables */
+extern int pgws_historySize;
+extern int pgws_historyPeriod;
+extern int pgws_profilePeriod;
+extern bool pgws_profilePid;
+extern int pgws_profileQueries;
+extern bool pgws_sampleCpu;
 
 /* pg_wait_sampling.c */
 extern CollectorShmqHeader *pgws_collector_hdr;
