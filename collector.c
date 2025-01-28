@@ -16,6 +16,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
+#include "postmaster/interrupt.h"
 #include "storage/ipc.h"
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
@@ -151,7 +152,7 @@ probe_waits(History *observations, HTAB *profile_hash,
 	TimestampTz	ts = GetCurrentTimestamp();
 
 	/* Realloc waits history if needed */
-	newSize = pgws_collector_hdr->historySize;
+	newSize = pgws_historySize;
 	if (observations->count != newSize)
 		realloc_history(observations, newSize);
 
@@ -170,7 +171,7 @@ probe_waits(History *observations, HTAB *profile_hash,
 		item.pid = proc->pid;
 		item.wait_event_info = proc->wait_event_info;
 
-		if (pgws_collector_hdr->profileQueries)
+		if (pgws_profileQueries)
 			item.queryId = pgws_proc_queryids[i];
 		else
 			item.queryId = 0;
@@ -289,7 +290,7 @@ make_profile_hash()
 	hash_ctl.hash = tag_hash;
 	hash_ctl.hcxt = TopMemoryContext;
 
-	if (pgws_collector_hdr->profileQueries)
+	if (pgws_profileQueries)
 		hash_ctl.keysize = offsetof(ProfileItem, count);
 	else
 		hash_ctl.keysize = offsetof(ProfileItem, queryId);
@@ -346,6 +347,7 @@ pgws_collector_main(Datum main_arg)
 	 * partitipate to the ProcSignal infrastructure.
 	 */
 	pqsignal(SIGTERM, handle_sigterm);
+	pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
 	BackgroundWorkerUnblockSignals();
 	InitPostgresCompat(NULL, InvalidOid, NULL, InvalidOid, 0, NULL);
@@ -361,7 +363,7 @@ pgws_collector_main(Datum main_arg)
 	collector_context = AllocSetContextCreate(TopMemoryContext,
 			"pg_wait_sampling context", ALLOCSET_DEFAULT_SIZES);
 	old_context = MemoryContextSwitchTo(collector_context);
-	alloc_history(&observations, pgws_collector_hdr->historySize);
+	alloc_history(&observations, pgws_historySize);
 	MemoryContextSwitchTo(old_context);
 
 	ereport(LOG, (errmsg("pg_wait_sampling collector started")));
@@ -375,29 +377,31 @@ pgws_collector_main(Datum main_arg)
 		shm_mq_handle  *mqh;
 		int64			history_diff,
 						profile_diff;
-		int				history_period,
-						profile_period;
 		bool			write_history,
 						write_profile;
 
 		/* We need an explicit call for at least ProcSignal notifications. */
 		CHECK_FOR_INTERRUPTS();
 
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
 		/* Wait calculate time to next sample for history or profile */
 		current_ts = GetCurrentTimestamp();
 
 		history_diff = millisecs_diff(history_ts, current_ts);
 		profile_diff = millisecs_diff(profile_ts, current_ts);
-		history_period = pgws_collector_hdr->historyPeriod;
-		profile_period = pgws_collector_hdr->profilePeriod;
 
-		write_history = (history_diff >= (int64)history_period);
-		write_profile = (profile_diff >= (int64)profile_period);
+		write_history = (history_diff >= (int64)pgws_historyPeriod);
+		write_profile = (profile_diff >= (int64)pgws_profilePeriod);
 
 		if (write_history || write_profile)
 		{
 			probe_waits(&observations, profile_hash,
-						write_history, write_profile, pgws_collector_hdr->profilePid);
+						write_history, write_profile, pgws_profilePid);
 
 			if (write_history)
 			{
@@ -421,8 +425,8 @@ pgws_collector_main(Datum main_arg)
 		 * shared memory.
 		 */
 		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-				Min(history_period - (int)history_diff,
-					profile_period - (int)profile_diff), PG_WAIT_EXTENSION);
+				Min(pgws_historyPeriod - (int)history_diff,
+					pgws_historyPeriod - (int)profile_diff), PG_WAIT_EXTENSION);
 
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);

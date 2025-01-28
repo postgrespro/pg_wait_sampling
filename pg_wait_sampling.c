@@ -124,9 +124,17 @@ static const struct config_enum_entry pgws_profile_queries_options[] =
 	{NULL, 		0, false}
 };
 
+/* GUC variables */
+int pgws_historySize = 5000;
+int pgws_historyPeriod = 10;
+int pgws_profilePeriod = 10;
+bool pgws_profilePid = true;
+int pgws_profileQueries = PGWS_PROFILE_QUERIES_TOP;
+bool pgws_sampleCpu = true;
+
 #define pgws_enabled(level) \
-	((pgws_collector_hdr->profileQueries == PGWS_PROFILE_QUERIES_ALL) || \
-	 (pgws_collector_hdr->profileQueries == PGWS_PROFILE_QUERIES_TOP && (level) == 0))
+	((pgws_profileQueries == PGWS_PROFILE_QUERIES_ALL) || \
+	 (pgws_profileQueries == PGWS_PROFILE_QUERIES_TOP && (level) == 0))
 
 /*
  * Calculate max processes count.
@@ -210,155 +218,6 @@ pgws_shmem_size(void)
 	return size;
 }
 
-static bool
-shmem_int_guc_check_hook(int *newval, void **extra, GucSource source)
-{
-	if (UsedShmemSegAddr == NULL)
-		return false;
-	return true;
-}
-
-static bool
-shmem_enum_guc_check_hook(int *newval, void **extra, GucSource source)
-{
-	if (UsedShmemSegAddr == NULL)
-		return false;
-	return true;
-}
-
-static bool
-shmem_bool_guc_check_hook(bool *newval, void **extra, GucSource source)
-{
-	if (UsedShmemSegAddr == NULL)
-		return false;
-	return true;
-}
-
-/*
- * This union allows us to mix the numerous different types of structs
- * that we are organizing.
- */
-typedef union
-{
-	struct config_generic generic;
-	struct config_bool _bool;
-	struct config_real real;
-	struct config_int integer;
-	struct config_string string;
-	struct config_enum _enum;
-} mixedStruct;
-
-/*
- * Setup new GUCs or modify existsing.
- */
-static void
-setup_gucs()
-{
-	struct config_generic **guc_vars;
-	int			numOpts,
-				i;
-	bool		history_size_found = false,
-				history_period_found = false,
-				profile_period_found = false,
-				profile_pid_found = false,
-				profile_queries_found = false,
-				sample_cpu_found = false;
-
-	get_guc_variables_compat(&guc_vars, &numOpts);
-
-	for (i = 0; i < numOpts; i++)
-	{
-		mixedStruct *var = (mixedStruct *) guc_vars[i];
-		const char *name = var->generic.name;
-
-		if (var->generic.flags & GUC_CUSTOM_PLACEHOLDER)
-			continue;
-
-		if (!strcmp(name, "pg_wait_sampling.history_size"))
-		{
-			history_size_found = true;
-			var->integer.variable = &pgws_collector_hdr->historySize;
-			pgws_collector_hdr->historySize = 5000;
-		}
-		else if (!strcmp(name, "pg_wait_sampling.history_period"))
-		{
-			history_period_found = true;
-			var->integer.variable = &pgws_collector_hdr->historyPeriod;
-			pgws_collector_hdr->historyPeriod = 10;
-		}
-		else if (!strcmp(name, "pg_wait_sampling.profile_period"))
-		{
-			profile_period_found = true;
-			var->integer.variable = &pgws_collector_hdr->profilePeriod;
-			pgws_collector_hdr->profilePeriod = 10;
-		}
-		else if (!strcmp(name, "pg_wait_sampling.profile_pid"))
-		{
-			profile_pid_found = true;
-			var->_bool.variable = &pgws_collector_hdr->profilePid;
-			pgws_collector_hdr->profilePid = true;
-		}
-		else if (!strcmp(name, "pg_wait_sampling.profile_queries"))
-		{
-			profile_queries_found = true;
-			var->_enum.variable = &pgws_collector_hdr->profileQueries;
-			pgws_collector_hdr->profileQueries = PGWS_PROFILE_QUERIES_TOP;
-		}
-		else if (!strcmp(name, "pg_wait_sampling.sample_cpu"))
-		{
-			sample_cpu_found = true;
-			var->_bool.variable = &pgws_collector_hdr->sampleCpu;
-			pgws_collector_hdr->sampleCpu = true;
-		}
-	}
-
-	if (!history_size_found)
-		DefineCustomIntVariable("pg_wait_sampling.history_size",
-				"Sets size of waits history.", NULL,
-				&pgws_collector_hdr->historySize, 5000, 100, INT_MAX,
-				PGC_SUSET, 0, shmem_int_guc_check_hook, NULL, NULL);
-
-	if (!history_period_found)
-		DefineCustomIntVariable("pg_wait_sampling.history_period",
-				"Sets period of waits history sampling.", NULL,
-				&pgws_collector_hdr->historyPeriod, 10, 1, INT_MAX,
-				PGC_SUSET, 0, shmem_int_guc_check_hook, NULL, NULL);
-
-	if (!profile_period_found)
-		DefineCustomIntVariable("pg_wait_sampling.profile_period",
-				"Sets period of waits profile sampling.", NULL,
-				&pgws_collector_hdr->profilePeriod, 10, 1, INT_MAX,
-				PGC_SUSET, 0, shmem_int_guc_check_hook, NULL, NULL);
-
-	if (!profile_pid_found)
-		DefineCustomBoolVariable("pg_wait_sampling.profile_pid",
-				"Sets whether profile should be collected per pid.", NULL,
-				&pgws_collector_hdr->profilePid, true,
-				PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
-
-	if (!profile_queries_found)
-		DefineCustomEnumVariable("pg_wait_sampling.profile_queries",
-				"Sets whether profile should be collected per query.", NULL,
-				&pgws_collector_hdr->profileQueries, PGWS_PROFILE_QUERIES_TOP, pgws_profile_queries_options,
-				PGC_SUSET, 0, shmem_enum_guc_check_hook, NULL, NULL);
-
-	if (!sample_cpu_found)
-		DefineCustomBoolVariable("pg_wait_sampling.sample_cpu",
-		                         "Sets whether not waiting backends should be sampled.", NULL,
-		                         &pgws_collector_hdr->sampleCpu, true,
-		                         PGC_SUSET, 0, shmem_bool_guc_check_hook, NULL, NULL);
-
-	if (history_size_found
-		|| history_period_found
-		|| profile_period_found
-		|| profile_pid_found
-		|| profile_queries_found
-	    || sample_cpu_found)
-	{
-		ProcessConfigFile(PGC_SIGHUP);
-	}
-}
-
 #if PG_VERSION_NUM >= 150000
 /*
  * shmem_request hook: request additional shared memory resources.
@@ -395,17 +254,12 @@ pgws_shmem_startup(void)
 
 		pgws_collector_hdr = shm_toc_allocate(toc, sizeof(CollectorShmqHeader));
 		shm_toc_insert(toc, 0, pgws_collector_hdr);
-		/* needed to please check_GUC_init */
-		pgws_collector_hdr->profileQueries = PGWS_PROFILE_QUERIES_TOP;
 		pgws_collector_mq = shm_toc_allocate(toc, COLLECTOR_QUEUE_SIZE);
 		shm_toc_insert(toc, 1, pgws_collector_mq);
 		pgws_proc_queryids = shm_toc_allocate(toc,
 									sizeof(uint64) * get_max_procs_count());
 		shm_toc_insert(toc, 2, pgws_proc_queryids);
 		MemSet(pgws_proc_queryids, 0, sizeof(uint64) * get_max_procs_count());
-
-		/* Initialize GUC variables in shared memory */
-		setup_gucs();
 	}
 	else
 	{
@@ -486,6 +340,84 @@ _PG_init(void)
 	ExecutorEnd_hook		= pgws_ExecutorEnd;
 	prev_ProcessUtility		= ProcessUtility_hook;
 	ProcessUtility_hook		= pgws_ProcessUtility;
+
+	/* Define GUC variables */
+	DefineCustomIntVariable("pg_wait_sampling.history_size",
+							"Sets size of waits history.",
+							NULL,
+							&pgws_historySize,
+							5000,
+							100,
+							INT_MAX,
+							PGC_SIGHUP,
+							0,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("pg_wait_sampling.history_period",
+							"Sets period of waits history sampling.",
+							NULL,
+							&pgws_historyPeriod,
+							10,
+							1,
+							INT_MAX,
+							PGC_SIGHUP,
+							GUC_UNIT_MS,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomIntVariable("pg_wait_sampling.profile_period",
+							"Sets period of waits profile sampling.",
+							NULL,
+							&pgws_profilePeriod,
+							10,
+							1,
+							INT_MAX,
+							PGC_SIGHUP,
+							GUC_UNIT_MS,
+							NULL,
+							NULL,
+							NULL);
+
+	DefineCustomBoolVariable("pg_wait_sampling.profile_pid",
+							 "Sets whether profile should be collected per pid.",
+							 NULL,
+							 &pgws_profilePid,
+							 true,
+							 PGC_SIGHUP,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+
+	DefineCustomEnumVariable("pg_wait_sampling.profile_queries",
+							 "Sets whether profile should be collected per query.",
+							 NULL,
+							 &pgws_profileQueries,
+							 PGWS_PROFILE_QUERIES_TOP,
+							 pgws_profile_queries_options,
+							 PGC_SIGHUP,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+
+	DefineCustomBoolVariable("pg_wait_sampling.sample_cpu",
+							 "Sets whether not waiting backends should be sampled.",
+							 NULL,
+							 &pgws_sampleCpu,
+							 true,
+							 PGC_SIGHUP,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+
+#if PG_VERSION_NUM >= 150000
+	MarkGUCPrefixReserved("pg_wait_sampling");
+#endif
 }
 
 /*
@@ -521,7 +453,7 @@ search_proc(int pid)
 bool
 pgws_should_sample_proc(PGPROC *proc)
 {
-	if (proc->wait_event_info == 0 && !pgws_collector_hdr->sampleCpu)
+	if (proc->wait_event_info == 0 && !pgws_sampleCpu)
 		return false;
 
 	/*
@@ -833,7 +765,7 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		else
 			nulls[2] = true;
 
-		if (pgws_collector_hdr->profileQueries)
+		if (pgws_profileQueries)
 			values[3] = UInt64GetDatum(item->queryId);
 		else
 			values[3] = (Datum) 0;
