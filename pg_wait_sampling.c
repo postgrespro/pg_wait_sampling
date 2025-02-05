@@ -2,7 +2,7 @@
  * pg_wait_sampling.c
  *		Track information about wait events.
  *
- * Copyright (c) 2015-2017, Postgres Professional
+ * Copyright (c) 2015-2025, Postgres Professional
  *
  * IDENTIFICATION
  *	  contrib/pg_wait_sampling/pg_wait_sampling.c
@@ -10,31 +10,32 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
-#include "access/twophase.h"
-#include "catalog/pg_type.h"
-#include "fmgr.h"
+#include "access/tupdesc.h"
+#include "catalog/pg_type_d.h"
+#include "executor/executor.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "optimizer/planner.h"
-#include "pgstat.h"
+#include "pg_wait_sampling.h"
 #include "postmaster/autovacuum.h"
 #include "replication/walsender.h"
 #include "storage/ipc.h"
-#include "storage/pg_shmem.h"
-#include "storage/procarray.h"
+#include "storage/latch.h"
+#include "storage/lock.h"
+#include "storage/proc.h"
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
-#include "storage/spin.h"
+#include "storage/shmem.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
-#include "utils/datetime.h"
-#include "utils/guc_tables.h"
 #include "utils/guc.h"
-#include "utils/memutils.h" /* TopMemoryContext.  Actually for PG 9.6 only,
-							 * but there should be no harm for others. */
-
-#include "compat.h"
-#include "pg_wait_sampling.h"
+#include "utils/memutils.h"
+#include "utils/timestamp.h"
+#if PG_VERSION_NUM < 140000
+#include "pgstat.h"
+#else
+#include "utils/wait_event.h"
+#endif
 
 PG_MODULE_MAGIC;
 
@@ -42,7 +43,7 @@ void		_PG_init(void);
 
 static bool shmem_initialized = false;
 
-/* Hooks */
+/* Hook varibales */
 static ExecutorStart_hook_type	prev_ExecutorStart = NULL;
 static ExecutorRun_hook_type 	prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
@@ -63,11 +64,12 @@ static shm_mq *recv_mq = NULL;
 static shm_mq_handle *recv_mqh = NULL;
 static LOCKTAG queueTag;
 
+/* Hook functions */
 #if PG_VERSION_NUM >= 150000
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
 #endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-static PGPROC * search_proc(int backendPid);
+static PGPROC *search_proc(int backendPid);
 static PlannedStmt *pgws_planner_hook(Query *parse,
 #if PG_VERSION_NUM >= 130000
 		const char *query_string,
@@ -124,7 +126,6 @@ static const struct config_enum_entry pgws_profile_queries_options[] =
 	{NULL, 		0, false}
 };
 
-/* GUC variables */
 int pgws_historySize = 5000;
 int pgws_historyPeriod = 10;
 int pgws_profilePeriod = 10;
@@ -250,6 +251,7 @@ pgws_shmem_startup(void)
 
 	if (!found)
 	{
+		/* Create shared objects */
 		toc = shm_toc_create(PG_WAIT_SAMPLING_MAGIC, pgws, segsize);
 
 		pgws_collector_hdr = shm_toc_allocate(toc, sizeof(CollectorShmqHeader));
@@ -263,6 +265,7 @@ pgws_shmem_startup(void)
 	}
 	else
 	{
+		/* Get existing shared objects */
 		toc = shm_toc_attach(PG_WAIT_SAMPLING_MAGIC, pgws);
 		pgws_collector_hdr = shm_toc_lookup(toc, 0, false);
 		pgws_collector_mq = shm_toc_lookup(toc, 1, false);
@@ -517,6 +520,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 
 		if (!PG_ARGISNULL(0))
 		{
+			/* pg_wait_sampling_get_current(pid int4) function */
 			HistoryItem	   *item;
 			PGPROC		   *proc;
 
@@ -530,6 +534,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		}
 		else
 		{
+			/* pg_wait_sampling_current view */
 			int		procCount = ProcGlobal->allProcCount,
 					i,
 					j = 0;
@@ -595,6 +600,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 	}
 	else
 	{
+		/* nothing left */
 		SRF_RETURN_DONE(funcctx);
 	}
 }
@@ -616,6 +622,7 @@ pgws_init_lock_tag(LOCKTAG *tag, uint32 lock)
 	tag->locktag_lockmethodid = USER_LOCKMETHOD;
 }
 
+/* Get array (history or profile data) from shared memory */
 static void *
 receive_array(SHMRequest request, Size item_size, Size *count)
 {
