@@ -164,12 +164,8 @@ probe_waits(History *observations, HTAB *profile_hash,
 					   *observation;
 		PGPROC		   *proc = &ProcGlobal->allProcs[i];
 
-		if (!pgws_should_sample_proc(proc))
+		if (!pgws_should_sample_proc(proc, &item.pid, &item.wait_event_info))
 			continue;
-
-		/* Collect next wait event sample */
-		item.pid = proc->pid;
-		item.wait_event_info = proc->wait_event_info;
 
 		if (pgws_profileQueries)
 			item.queryId = pgws_proc_queryids[i];

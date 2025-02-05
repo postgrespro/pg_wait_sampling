@@ -451,9 +451,15 @@ search_proc(int pid)
  * views.
  */
 bool
-pgws_should_sample_proc(PGPROC *proc)
+pgws_should_sample_proc(PGPROC *proc, int *pid_p, uint32 *wait_event_info_p)
 {
-	if (proc->wait_event_info == 0 && !pgws_sampleCpu)
+	int			pid = proc->pid;
+	uint32		wait_event_info = proc->wait_event_info;
+
+	*pid_p = pid;
+	*wait_event_info_p = wait_event_info;
+
+	if (wait_event_info == 0 && !pgws_sampleCpu)
 		return false;
 
 	/*
@@ -462,7 +468,7 @@ pgws_should_sample_proc(PGPROC *proc)
 	 * null wait events. So instead we make use of DisownLatch() resetting
 	 * owner_pid during ProcKill().
 	 */
-	if (proc->pid == 0 || proc->procLatch.owner_pid == 0 || proc->pid == MyProcPid)
+	if (pid == 0 || proc->procLatch.owner_pid == 0 || pid == MyProcPid)
 		return false;
 
 	return true;
@@ -533,7 +539,9 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			{
 				PGPROC *proc = &ProcGlobal->allProcs[i];
 
-				if (!pgws_should_sample_proc(proc))
+				if (!pgws_should_sample_proc(proc,
+											 &params->items[j].pid,
+											 &params->items[j].wait_event_info))
 					continue;
 
 				params->items[j].pid = proc->pid;

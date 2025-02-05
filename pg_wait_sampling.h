@@ -24,7 +24,7 @@
 
 typedef struct
 {
-	uint32			pid;
+	int				pid;
 	uint32			wait_event_info;
 	uint64			queryId;
 	uint64			count;
@@ -32,7 +32,7 @@ typedef struct
 
 typedef struct
 {
-	uint32			pid;
+	int				pid;
 	uint32			wait_event_info;
 	uint64			queryId;
 	TimestampTz		ts;
@@ -73,7 +73,7 @@ extern CollectorShmqHeader *pgws_collector_hdr;
 extern shm_mq			   *pgws_collector_mq;
 extern uint64			   *pgws_proc_queryids;
 extern void pgws_init_lock_tag(LOCKTAG *tag, uint32 lock);
-extern bool pgws_should_sample_proc(PGPROC *proc);
+extern bool pgws_should_sample_proc(PGPROC *proc, int *pid_p, uint32 *wait_event_info_p);
 
 /* collector.c */
 extern void pgws_register_wait_collector(void);
