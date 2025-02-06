@@ -16,7 +16,9 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
+#if PG_VERSION_NUM >= 130000
 #include "postmaster/interrupt.h"
+#endif
 #include "storage/ipc.h"
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
@@ -310,6 +312,19 @@ millisecs_diff(TimestampTz tz1, TimestampTz tz2)
 	return secs * 1000 + microsecs / 1000;
 
 }
+
+#if PG_VERSION_NUM < 130000
+static void
+SignalHandlerForConfigReload(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	ConfigReloadPending = true;
+	SetLatch(MyLatch);
+
+	errno = save_errno;
+}
+#endif
 
 /*
  * Main routine of wait history collector.
