@@ -2,15 +2,13 @@
  * pg_wait_sampling.h
  *		Headers for pg_wait_sampling extension.
  *
- * Copyright (c) 2015-2016, Postgres Professional
+ * Copyright (c) 2015-2025, Postgres Professional
  *
  * IDENTIFICATION
  *	  contrib/pg_wait_sampling/pg_wait_sampling.h
  */
 #ifndef __PG_WAIT_SAMPLING_H__
 #define __PG_WAIT_SAMPLING_H__
-
-#include "postgres.h"
 
 #include "storage/proc.h"
 #include "storage/shm_mq.h"
