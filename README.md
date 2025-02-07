@@ -51,7 +51,7 @@ PostgreSQL installation. It is available from
 [github](https://github.com/postgrespro/pg_wait_sampling)
 under the same license as
 [PostgreSQL](http://www.postgresql.org/about/licence/)
-and supports PostgreSQL 12+.
+and supports PostgreSQL 13+.
 
 Installation
 ------------
@@ -62,10 +62,10 @@ repository: https://download.postgresql.org/pub/repos/
 Manual build
 ------------
 
-`pg_wait_sampling` is PostgreSQL extension which requires PostgreSQL 12 or
+`pg_wait_sampling` is PostgreSQL extension which requires PostgreSQL 13 or
 higher. Before build and install you should ensure following:
 
- * PostgreSQL version is 12 or higher.
+ * PostgreSQL version is 13 or higher.
  * You have development package of PostgreSQL installed or you built
    PostgreSQL from source.
  * Your PATH variable is configured so that `pg_config` command available, or
