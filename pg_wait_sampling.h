@@ -23,26 +23,26 @@
 
 typedef struct
 {
-	int				pid;
-	uint32			wait_event_info;
-	uint64			queryId;
-	uint64			count;
+	int			pid;
+	uint32		wait_event_info;
+	uint64		queryId;
+	uint64		count;
 } ProfileItem;
 
 typedef struct
 {
-	int				pid;
-	uint32			wait_event_info;
-	uint64			queryId;
-	TimestampTz		ts;
+	int			pid;
+	uint32		wait_event_info;
+	uint64		queryId;
+	TimestampTz ts;
 } HistoryItem;
 
 typedef struct
 {
-	bool			wraparound;
-	Size			index;
-	Size			count;
-	HistoryItem	   *items;
+	bool		wraparound;
+	Size		index;
+	Size		count;
+	HistoryItem *items;
 } History;
 
 typedef enum
@@ -55,22 +55,22 @@ typedef enum
 
 typedef struct
 {
-	Latch		   *latch;
-	SHMRequest		request;
+	Latch	   *latch;
+	SHMRequest	request;
 } CollectorShmqHeader;
 
 /* GUC variables */
-extern int pgws_historySize;
-extern int pgws_historyPeriod;
-extern int pgws_profilePeriod;
+extern int	pgws_historySize;
+extern int	pgws_historyPeriod;
+extern int	pgws_profilePeriod;
 extern bool pgws_profilePid;
-extern int pgws_profileQueries;
+extern int	pgws_profileQueries;
 extern bool pgws_sampleCpu;
 
 /* pg_wait_sampling.c */
 extern CollectorShmqHeader *pgws_collector_hdr;
-extern shm_mq			   *pgws_collector_mq;
-extern uint64			   *pgws_proc_queryids;
+extern shm_mq *pgws_collector_mq;
+extern uint64 *pgws_proc_queryids;
 extern void pgws_init_lock_tag(LOCKTAG *tag, uint32 lock);
 extern bool pgws_should_sample_proc(PGPROC *proc, int *pid_p, uint32 *wait_event_info_p);
 

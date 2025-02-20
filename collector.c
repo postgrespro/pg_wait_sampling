@@ -74,10 +74,10 @@ alloc_history(History *observations, int count)
 static void
 realloc_history(History *observations, int count)
 {
-	HistoryItem	   *newitems;
-	int				copyCount,
-					i,
-					j;
+	HistoryItem *newitems;
+	int			copyCount,
+				i,
+				j;
 
 	/* Allocate new array for history */
 	newitems = (HistoryItem *) palloc0(sizeof(HistoryItem) * count);
@@ -115,7 +115,8 @@ realloc_history(History *observations, int count)
 static void
 handle_sigterm(SIGNAL_ARGS)
 {
-	int save_errno = errno;
+	int			save_errno = errno;
+
 	shutdown_requested = true;
 	if (MyProc)
 		SetLatch(&MyProc->procLatch);
@@ -150,7 +151,7 @@ probe_waits(History *observations, HTAB *profile_hash,
 {
 	int			i,
 				newSize;
-	TimestampTz	ts = GetCurrentTimestamp();
+	TimestampTz ts = GetCurrentTimestamp();
 
 	/* Realloc waits history if needed */
 	newSize = pgws_historySize;
@@ -161,9 +162,9 @@ probe_waits(History *observations, HTAB *profile_hash,
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 	for (i = 0; i < ProcGlobal->allProcCount; i++)
 	{
-		HistoryItem		item,
-					   *observation;
-		PGPROC		   *proc = &ProcGlobal->allProcs[i];
+		HistoryItem item,
+				   *observation;
+		PGPROC	   *proc = &ProcGlobal->allProcs[i];
 
 		if (!pgws_should_sample_proc(proc, &item.pid, &item.wait_event_info))
 			continue;
@@ -185,8 +186,8 @@ probe_waits(History *observations, HTAB *profile_hash,
 		/* Write to the profile if needed */
 		if (write_profile)
 		{
-			ProfileItem	   *profileItem;
-			bool			found;
+			ProfileItem *profileItem;
+			bool		found;
 
 			if (!profile_pid)
 				item.pid = 0;
@@ -207,9 +208,9 @@ probe_waits(History *observations, HTAB *profile_hash,
 static void
 send_history(History *observations, shm_mq_handle *mqh)
 {
-	Size	count,
-			i;
-	shm_mq_result	mq_result;
+	Size		count,
+				i;
+	shm_mq_result mq_result;
 
 	if (observations->wraparound)
 		count = observations->count;
@@ -227,10 +228,10 @@ send_history(History *observations, shm_mq_handle *mqh)
 	for (i = 0; i < count; i++)
 	{
 		mq_result = shm_mq_send_compat(mqh,
-								sizeof(HistoryItem),
-								&observations->items[i],
-								false,
-								true);
+									   sizeof(HistoryItem),
+									   &observations->items[i],
+									   false,
+									   true);
 		if (mq_result == SHM_MQ_DETACHED)
 		{
 			ereport(WARNING,
@@ -247,10 +248,10 @@ send_history(History *observations, shm_mq_handle *mqh)
 static void
 send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 {
-	HASH_SEQ_STATUS	scan_status;
-	ProfileItem	   *item;
-	Size			count = hash_get_num_entries(profile_hash);
-	shm_mq_result	mq_result;
+	HASH_SEQ_STATUS scan_status;
+	ProfileItem *item;
+	Size		count = hash_get_num_entries(profile_hash);
+	shm_mq_result mq_result;
 
 	mq_result = shm_mq_send_compat(mqh, sizeof(count), &count, false, true);
 	if (mq_result == SHM_MQ_DETACHED)
@@ -282,7 +283,7 @@ send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 static HTAB *
 make_profile_hash()
 {
-	HASHCTL hash_ctl;
+	HASHCTL		hash_ctl;
 
 	hash_ctl.hash = tag_hash;
 	hash_ctl.hcxt = TopMemoryContext;
@@ -303,8 +304,8 @@ make_profile_hash()
 static int64
 millisecs_diff(TimestampTz tz1, TimestampTz tz2)
 {
-	long	secs;
-	int		microsecs;
+	long		secs;
+	int			microsecs;
 
 	TimestampDifference(tz1, tz2, &secs, &microsecs);
 
@@ -318,13 +319,13 @@ millisecs_diff(TimestampTz tz1, TimestampTz tz2)
 void
 pgws_collector_main(Datum main_arg)
 {
-	HTAB		   *profile_hash = NULL;
-	History			observations;
-	MemoryContext	old_context,
-					collector_context;
-	TimestampTz		current_ts,
-					history_ts,
-					profile_ts;
+	HTAB	   *profile_hash = NULL;
+	History		observations;
+	MemoryContext old_context,
+				collector_context;
+	TimestampTz current_ts,
+				history_ts,
+				profile_ts;
 
 	/*
 	 * Establish signal handlers.
@@ -358,7 +359,7 @@ pgws_collector_main(Datum main_arg)
 
 	CurrentResourceOwner = ResourceOwnerCreate(NULL, "pg_wait_sampling collector");
 	collector_context = AllocSetContextCreate(TopMemoryContext,
-			"pg_wait_sampling context", ALLOCSET_DEFAULT_SIZES);
+											  "pg_wait_sampling context", ALLOCSET_DEFAULT_SIZES);
 	old_context = MemoryContextSwitchTo(collector_context);
 	alloc_history(&observations, pgws_historySize);
 	MemoryContextSwitchTo(old_context);
@@ -370,12 +371,12 @@ pgws_collector_main(Datum main_arg)
 
 	while (1)
 	{
-		int				rc;
-		shm_mq_handle  *mqh;
-		int64			history_diff,
-						profile_diff;
-		bool			write_history,
-						write_profile;
+		int			rc;
+		shm_mq_handle *mqh;
+		int64		history_diff,
+					profile_diff;
+		bool		write_history,
+					write_profile;
 
 		/* We need an explicit call for at least ProcSignal notifications. */
 		CHECK_FOR_INTERRUPTS();
@@ -392,8 +393,8 @@ pgws_collector_main(Datum main_arg)
 		history_diff = millisecs_diff(history_ts, current_ts);
 		profile_diff = millisecs_diff(profile_ts, current_ts);
 
-		write_history = (history_diff >= (int64)pgws_historyPeriod);
-		write_profile = (profile_diff >= (int64)pgws_profilePeriod);
+		write_history = (history_diff >= (int64) pgws_historyPeriod);
+		write_profile = (profile_diff >= (int64) pgws_profilePeriod);
 
 		if (write_history || write_profile)
 		{
@@ -422,8 +423,8 @@ pgws_collector_main(Datum main_arg)
 		 * shared memory.
 		 */
 		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-				Min(pgws_historyPeriod - (int)history_diff,
-					pgws_historyPeriod - (int)profile_diff), PG_WAIT_EXTENSION);
+					   Min(pgws_historyPeriod - (int) history_diff,
+						   pgws_historyPeriod - (int) profile_diff), PG_WAIT_EXTENSION);
 
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
@@ -444,7 +445,7 @@ pgws_collector_main(Datum main_arg)
 
 			if (request == HISTORY_REQUEST || request == PROFILE_REQUEST)
 			{
-				shm_mq_result	mq_result;
+				shm_mq_result mq_result;
 
 				/* Send history or profile */
 				shm_mq_set_sender(pgws_collector_mq, MyProc);

@@ -45,20 +45,20 @@ void		_PG_init(void);
 static bool shmem_initialized = false;
 
 /* Hooks */
-static ExecutorStart_hook_type	prev_ExecutorStart = NULL;
-static ExecutorRun_hook_type 	prev_ExecutorRun = NULL;
+static ExecutorStart_hook_type prev_ExecutorStart = NULL;
+static ExecutorRun_hook_type prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
-static ExecutorEnd_hook_type	prev_ExecutorEnd = NULL;
-static planner_hook_type		planner_hook_next = NULL;
+static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
+static planner_hook_type planner_hook_next = NULL;
 static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 
 /* Current nesting depth of planner/Executor calls */
-static int nesting_level = 0;
+static int	nesting_level = 0;
 
 /* Pointers to shared memory objects */
-shm_mq				   *pgws_collector_mq = NULL;
-uint64				   *pgws_proc_queryids = NULL;
-CollectorShmqHeader	   *pgws_collector_hdr = NULL;
+shm_mq	   *pgws_collector_mq = NULL;
+uint64	   *pgws_proc_queryids = NULL;
+CollectorShmqHeader *pgws_collector_hdr = NULL;
 
 /* Receiver (backend) local shm_mq pointers and lock */
 static shm_mq *recv_mq = NULL;
@@ -69,20 +69,20 @@ static LOCKTAG queueTag;
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
 #endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
-static PGPROC * search_proc(int backendPid);
+static PGPROC *search_proc(int backendPid);
 static PlannedStmt *pgws_planner_hook(Query *parse,
 #if PG_VERSION_NUM >= 130000
-		const char *query_string,
+									  const char *query_string,
 #endif
-		int cursorOptions, ParamListInfo boundParams);
+									  int cursorOptions, ParamListInfo boundParams);
 static void pgws_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgws_ExecutorRun(QueryDesc *queryDesc,
 							 ScanDirection direction,
 							 uint64 count
 #if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
-							 , bool execute_once
+							 ,bool execute_once
 #endif
-							 );
+);
 static void pgws_ExecutorFinish(QueryDesc *queryDesc);
 static void pgws_ExecutorEnd(QueryDesc *queryDesc);
 static void pgws_ProcessUtility(PlannedStmt *pstmt,
@@ -99,40 +99,40 @@ static void pgws_ProcessUtility(PlannedStmt *pstmt,
 #else
 								char *completionTag
 #endif
-								);
+);
 
 /*---- GUC variables ----*/
 
 typedef enum
 {
-	PGWS_PROFILE_QUERIES_NONE,			/* profile no statements */
-	PGWS_PROFILE_QUERIES_TOP,			/* only top level statements */
-	PGWS_PROFILE_QUERIES_ALL			/* all statements, including nested ones */
+	PGWS_PROFILE_QUERIES_NONE,	/* profile no statements */
+	PGWS_PROFILE_QUERIES_TOP,	/* only top level statements */
+	PGWS_PROFILE_QUERIES_ALL	/* all statements, including nested ones */
 } PGWSTrackLevel;
 
 static const struct config_enum_entry pgws_profile_queries_options[] =
 {
-	{"none", 	PGWS_PROFILE_QUERIES_NONE, false},
-	{"off", 	PGWS_PROFILE_QUERIES_NONE, false},
-	{"no", 		PGWS_PROFILE_QUERIES_NONE, false},
-	{"false", 	PGWS_PROFILE_QUERIES_NONE, false},
-	{"0", 		PGWS_PROFILE_QUERIES_NONE, false},
-	{"top", 	PGWS_PROFILE_QUERIES_TOP, false},
-	{"on", 		PGWS_PROFILE_QUERIES_TOP, false},
-	{"yes", 	PGWS_PROFILE_QUERIES_TOP, false},
-	{"true", 	PGWS_PROFILE_QUERIES_TOP, false},
-	{"1", 		PGWS_PROFILE_QUERIES_TOP, false},
-	{"all", 	PGWS_PROFILE_QUERIES_ALL, false},
-	{NULL, 		0, false}
+	{"none", PGWS_PROFILE_QUERIES_NONE, false},
+	{"off", PGWS_PROFILE_QUERIES_NONE, false},
+	{"no", PGWS_PROFILE_QUERIES_NONE, false},
+	{"false", PGWS_PROFILE_QUERIES_NONE, false},
+	{"0", PGWS_PROFILE_QUERIES_NONE, false},
+	{"top", PGWS_PROFILE_QUERIES_TOP, false},
+	{"on", PGWS_PROFILE_QUERIES_TOP, false},
+	{"yes", PGWS_PROFILE_QUERIES_TOP, false},
+	{"true", PGWS_PROFILE_QUERIES_TOP, false},
+	{"1", PGWS_PROFILE_QUERIES_TOP, false},
+	{"all", PGWS_PROFILE_QUERIES_ALL, false},
+	{NULL, 0, false}
 };
 
 /* GUC variables */
-int pgws_historySize = 5000;
-int pgws_historyPeriod = 10;
-int pgws_profilePeriod = 10;
-bool pgws_profilePid = true;
-int pgws_profileQueries = PGWS_PROFILE_QUERIES_TOP;
-bool pgws_sampleCpu = true;
+int			pgws_historySize = 5000;
+int			pgws_historyPeriod = 10;
+int			pgws_profilePeriod = 10;
+bool		pgws_profilePid = true;
+int			pgws_profileQueries = PGWS_PROFILE_QUERIES_TOP;
+bool		pgws_sampleCpu = true;
 
 #define pgws_enabled(level) \
 	((pgws_profileQueries == PGWS_PROFILE_QUERIES_ALL) || \
@@ -148,10 +148,11 @@ bool pgws_sampleCpu = true;
 static int
 get_max_procs_count(void)
 {
-	int count = 0;
+	int			count = 0;
 
 	/* First, add the maximum number of backends (MaxBackends). */
 #if PG_VERSION_NUM >= 150000
+
 	/*
 	 * On pg15+, we can directly access the MaxBackends variable, as it will
 	 * have already been initialized in shmem_request_hook.
@@ -159,35 +160,35 @@ get_max_procs_count(void)
 	Assert(MaxBackends > 0);
 	count += MaxBackends;
 #else
+
 	/*
-	 * On older versions, we need to compute MaxBackends: bgworkers, autovacuum
-	 * workers and launcher.
-	 * This has to be in sync with the value computed in
-	 * InitializeMaxBackends() (postinit.c)
+	 * On older versions, we need to compute MaxBackends: bgworkers,
+	 * autovacuum workers and launcher. This has to be in sync with the value
+	 * computed in InitializeMaxBackends() (postinit.c)
 	 *
-	 * Note that we need to calculate the value as it won't initialized when we
-	 * need it during _PG_init().
+	 * Note that we need to calculate the value as it won't initialized when
+	 * we need it during _PG_init().
 	 *
 	 * Note also that the value returned during _PG_init() might be different
 	 * from the value returned later if some third-party modules change one of
 	 * the underlying GUC.  This isn't ideal but can't lead to a crash, as the
 	 * value returned during _PG_init() is only used to ask for additional
 	 * shmem with RequestAddinShmemSpace(), and postgres has an extra 100kB of
-	 * shmem to compensate some small unaccounted usage.  So if the value later
-	 * changes, we will allocate and initialize the new (and correct) memory
-	 * size, which will either work thanks for the extra 100kB of shmem, of
-	 * fail (and prevent postgres startup) due to an out of shared memory
-	 * error.
+	 * shmem to compensate some small unaccounted usage.  So if the value
+	 * later changes, we will allocate and initialize the new (and correct)
+	 * memory size, which will either work thanks for the extra 100kB of
+	 * shmem, of fail (and prevent postgres startup) due to an out of shared
+	 * memory error.
 	 */
 	count += MaxConnections + autovacuum_max_workers + 1
-			+ max_worker_processes;
+		+ max_worker_processes;
 
 	/*
 	 * Starting with pg12, wal senders aren't part of MaxConnections anymore
 	 * and have to be accounted for.
 	 */
 	count += max_wal_senders;
-#endif		/* pg 15- */
+#endif							/* pg 15- */
 	/* End of MaxBackends calculation. */
 
 	/* Add AuxiliaryProcs */
@@ -202,9 +203,9 @@ get_max_procs_count(void)
 static Size
 pgws_shmem_size(void)
 {
-	shm_toc_estimator	e;
-	Size				size;
-	int					nkeys;
+	shm_toc_estimator e;
+	Size		size;
+	int			nkeys;
 
 	shm_toc_initialize_estimator(&e);
 
@@ -246,7 +247,7 @@ pgws_shmem_startup(void)
 	bool		found;
 	Size		segsize = pgws_shmem_size();
 	void	   *pgws;
-	shm_toc	   *toc;
+	shm_toc    *toc;
 
 	pgws = ShmemInitStruct("pg_wait_sampling", segsize, &found);
 
@@ -259,7 +260,7 @@ pgws_shmem_startup(void)
 		pgws_collector_mq = shm_toc_allocate(toc, COLLECTOR_QUEUE_SIZE);
 		shm_toc_insert(toc, 1, pgws_collector_mq);
 		pgws_proc_queryids = shm_toc_allocate(toc,
-									sizeof(uint64) * get_max_procs_count());
+											  sizeof(uint64) * get_max_procs_count());
 		shm_toc_insert(toc, 2, pgws_proc_queryids);
 		MemSet(pgws_proc_queryids, 0, sizeof(uint64) * get_max_procs_count());
 	}
@@ -308,6 +309,7 @@ _PG_init(void)
 		return;
 
 #if PG_VERSION_NUM < 150000
+
 	/*
 	 * Request additional shared resources.  (These are no-ops if we're not in
 	 * the postmaster process.)  We'll allocate or attach to the shared
@@ -326,22 +328,22 @@ _PG_init(void)
 	 */
 #if PG_VERSION_NUM >= 150000
 	prev_shmem_request_hook = shmem_request_hook;
-	shmem_request_hook		= pgws_shmem_request;
+	shmem_request_hook = pgws_shmem_request;
 #endif
 	prev_shmem_startup_hook = shmem_startup_hook;
-	shmem_startup_hook		= pgws_shmem_startup;
-	planner_hook_next		= planner_hook;
-	planner_hook			= pgws_planner_hook;
-	prev_ExecutorStart		= ExecutorStart_hook;
-	ExecutorStart_hook		= pgws_ExecutorStart;
-	prev_ExecutorRun		= ExecutorRun_hook;
-	ExecutorRun_hook		= pgws_ExecutorRun;
-	prev_ExecutorFinish		= ExecutorFinish_hook;
-	ExecutorFinish_hook		= pgws_ExecutorFinish;
-	prev_ExecutorEnd		= ExecutorEnd_hook;
-	ExecutorEnd_hook		= pgws_ExecutorEnd;
-	prev_ProcessUtility		= ProcessUtility_hook;
-	ProcessUtility_hook		= pgws_ProcessUtility;
+	shmem_startup_hook = pgws_shmem_startup;
+	planner_hook_next = planner_hook;
+	planner_hook = pgws_planner_hook;
+	prev_ExecutorStart = ExecutorStart_hook;
+	ExecutorStart_hook = pgws_ExecutorStart;
+	prev_ExecutorRun = ExecutorRun_hook;
+	ExecutorRun_hook = pgws_ExecutorRun;
+	prev_ExecutorFinish = ExecutorFinish_hook;
+	ExecutorFinish_hook = pgws_ExecutorFinish;
+	prev_ExecutorEnd = ExecutorEnd_hook;
+	ExecutorEnd_hook = pgws_ExecutorEnd;
+	prev_ProcessUtility = ProcessUtility_hook;
+	ProcessUtility_hook = pgws_ProcessUtility;
 
 	/* Define GUC variables */
 	DefineCustomIntVariable("pg_wait_sampling.history_size",
@@ -429,14 +431,15 @@ _PG_init(void)
 static PGPROC *
 search_proc(int pid)
 {
-	int i;
+	int			i;
 
 	if (pid == 0)
 		return MyProc;
 
 	for (i = 0; i < ProcGlobal->allProcCount; i++)
 	{
-		PGPROC	*proc = &ProcGlobal->allProcs[i];
+		PGPROC	   *proc = &ProcGlobal->allProcs[i];
+
 		if (proc->pid && proc->pid == pid)
 		{
 			return proc;
@@ -478,28 +481,28 @@ pgws_should_sample_proc(PGPROC *proc, int *pid_p, uint32 *wait_event_info_p)
 
 typedef struct
 {
-	HistoryItem	   *items;
-	TimestampTz		ts;
+	HistoryItem *items;
+	TimestampTz ts;
 } WaitCurrentContext;
 
 PG_FUNCTION_INFO_V1(pg_wait_sampling_get_current);
 Datum
 pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 {
-	FuncCallContext 	*funcctx;
-	WaitCurrentContext 	*params;
+	FuncCallContext *funcctx;
+	WaitCurrentContext *params;
 
 	check_shmem();
 
 	if (SRF_IS_FIRSTCALL())
 	{
-		MemoryContext		oldcontext;
-		TupleDesc			tupdesc;
+		MemoryContext oldcontext;
+		TupleDesc	tupdesc;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
-		params = (WaitCurrentContext *)palloc0(sizeof(WaitCurrentContext));
+		params = (WaitCurrentContext *) palloc0(sizeof(WaitCurrentContext));
 		params->ts = GetCurrentTimestamp();
 
 		funcctx->user_fctx = params;
@@ -519,8 +522,8 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 
 		if (!PG_ARGISNULL(0))
 		{
-			HistoryItem	   *item;
-			PGPROC		   *proc;
+			HistoryItem *item;
+			PGPROC	   *proc;
 
 			proc = search_proc(PG_GETARG_UINT32(0));
 			params->items = (HistoryItem *) palloc0(sizeof(HistoryItem));
@@ -532,14 +535,14 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		}
 		else
 		{
-			int		procCount = ProcGlobal->allProcCount,
-					i,
-					j = 0;
+			int			procCount = ProcGlobal->allProcCount,
+						i,
+						j = 0;
 
 			params->items = (HistoryItem *) palloc0(sizeof(HistoryItem) * procCount);
 			for (i = 0; i < procCount; i++)
 			{
-				PGPROC *proc = &ProcGlobal->allProcs[i];
+				PGPROC	   *proc = &ProcGlobal->allProcs[i];
 
 				if (!pgws_should_sample_proc(proc,
 											 &params->items[j].pid,
@@ -603,8 +606,8 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 
 typedef struct
 {
-	Size			count;
-	ProfileItem	   *items;
+	Size		count;
+	ProfileItem *items;
 } Profile;
 
 void
@@ -621,14 +624,14 @@ pgws_init_lock_tag(LOCKTAG *tag, uint32 lock)
 static void *
 receive_array(SHMRequest request, Size item_size, Size *count)
 {
-	LOCKTAG			collectorTag;
-	shm_mq_result	res;
-	Size			len,
-					i;
-	void		   *data;
-	Pointer			result,
-					ptr;
-	MemoryContext	oldctx;
+	LOCKTAG		collectorTag;
+	shm_mq_result res;
+	Size		len,
+				i;
+	void	   *data;
+	Pointer		result,
+				ptr;
+	MemoryContext oldctx;
 
 	/* Ensure nobody else trying to send request to queue */
 	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
@@ -649,9 +652,9 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	shm_mq_set_receiver(recv_mq, MyProc);
 
 	/*
-	 * We switch to TopMemoryContext, so that recv_mqh is allocated there
-	 * and is guaranteed to survive until before_shmem_exit callbacks are
-	 * fired.  Anyway, shm_mq_detach() will free handler on its own.
+	 * We switch to TopMemoryContext, so that recv_mqh is allocated there and
+	 * is guaranteed to survive until before_shmem_exit callbacks are fired.
+	 * Anyway, shm_mq_detach() will free handler on its own.
 	 *
 	 * NB: we do not pass `seg` to shm_mq_attach(), so it won't set its own
 	 * callback, i.e. we do not interfere here with shm_mq_detach_callback().
@@ -661,10 +664,10 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	MemoryContextSwitchTo(oldctx);
 
 	/*
-	 * Now we surely attached to the shm_mq and got collector's attention.
-	 * If anything went wrong (e.g. Ctrl+C received from the client) we have
-	 * to cleanup some things, i.e. detach from the shm_mq, so collector was
-	 * able to continue responding to other requests.
+	 * Now we surely attached to the shm_mq and got collector's attention. If
+	 * anything went wrong (e.g. Ctrl+C received from the client) we have to
+	 * cleanup some things, i.e. detach from the shm_mq, so collector was able
+	 * to continue responding to other requests.
 	 *
 	 * PG_ENSURE_ERROR_CLEANUP() guaranties that cleanup callback will be
 	 * fired for both ERROR and FATAL.
@@ -704,15 +707,15 @@ PG_FUNCTION_INFO_V1(pg_wait_sampling_get_profile);
 Datum
 pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 {
-	Profile			   *profile;
-	FuncCallContext	   *funcctx;
+	Profile    *profile;
+	FuncCallContext *funcctx;
 
 	check_shmem();
 
 	if (SRF_IS_FIRSTCALL())
 	{
-		MemoryContext		oldcontext;
-		TupleDesc			tupdesc;
+		MemoryContext oldcontext;
+		TupleDesc	tupdesc;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
@@ -720,7 +723,7 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		/* Receive profile from shmq */
 		profile = (Profile *) palloc0(sizeof(Profile));
 		profile->items = (ProfileItem *) receive_array(PROFILE_REQUEST,
-										sizeof(ProfileItem), &profile->count);
+													   sizeof(ProfileItem), &profile->count);
 
 		funcctx->user_fctx = profile;
 		funcctx->max_calls = profile->count;
@@ -821,15 +824,15 @@ PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history);
 Datum
 pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 {
-	History				*history;
-	FuncCallContext		*funcctx;
+	History    *history;
+	FuncCallContext *funcctx;
 
 	check_shmem();
 
 	if (SRF_IS_FIRSTCALL())
 	{
-		MemoryContext	oldcontext;
-		TupleDesc		tupdesc;
+		MemoryContext oldcontext;
+		TupleDesc	tupdesc;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
@@ -837,7 +840,7 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		/* Receive history from shmq */
 		history = (History *) palloc0(sizeof(History));
 		history->items = (HistoryItem *) receive_array(HISTORY_REQUEST,
-										sizeof(HistoryItem), &history->count);
+													   sizeof(HistoryItem), &history->count);
 
 		funcctx->user_fctx = history;
 		funcctx->max_calls = history->count;
@@ -918,9 +921,9 @@ pgws_planner_hook(Query *parse,
 				  int cursorOptions,
 				  ParamListInfo boundParams)
 {
-	PlannedStmt    *result;
-	int				i = MyProc - ProcGlobal->allProcs;
-	uint64			save_queryId = 0;
+	PlannedStmt *result;
+	int			i = MyProc - ProcGlobal->allProcs;
+	uint64		save_queryId = 0;
 
 	if (pgws_enabled(nesting_level))
 	{
@@ -935,15 +938,15 @@ pgws_planner_hook(Query *parse,
 		if (planner_hook_next)
 			result = planner_hook_next(parse,
 #if PG_VERSION_NUM >= 130000
-					query_string,
+									   query_string,
 #endif
-					cursorOptions, boundParams);
+									   cursorOptions, boundParams);
 		else
 			result = standard_planner(parse,
 #if PG_VERSION_NUM >= 130000
-					query_string,
+									  query_string,
 #endif
-					cursorOptions, boundParams);
+									  cursorOptions, boundParams);
 		nesting_level--;
 		if (nesting_level == 0)
 			pgws_proc_queryids[i] = UINT64CONST(0);
@@ -970,7 +973,8 @@ pgws_planner_hook(Query *parse,
 static void
 pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-	int i = MyProc - ProcGlobal->allProcs;
+	int			i = MyProc - ProcGlobal->allProcs;
+
 	if (pgws_enabled(nesting_level))
 		pgws_proc_queryids[i] = queryDesc->plannedstmt->queryId;
 	if (prev_ExecutorStart)
@@ -981,15 +985,15 @@ pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
 static void
 pgws_ExecutorRun(QueryDesc *queryDesc,
-				ScanDirection direction,
-				uint64 count
+				 ScanDirection direction,
+				 uint64 count
 #if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
-				, bool execute_once
+				 ,bool execute_once
 #endif
-				)
+)
 {
-	int		i = MyProc - ProcGlobal->allProcs;
-	uint64	save_queryId = pgws_proc_queryids[i];
+	int			i = MyProc - ProcGlobal->allProcs;
+	uint64		save_queryId = pgws_proc_queryids[i];
 
 	nesting_level++;
 	PG_TRY();
@@ -1027,8 +1031,8 @@ pgws_ExecutorRun(QueryDesc *queryDesc,
 static void
 pgws_ExecutorFinish(QueryDesc *queryDesc)
 {
-	int		i = MyProc - ProcGlobal->allProcs;
-	uint64	save_queryId = pgws_proc_queryids[i];
+	int			i = MyProc - ProcGlobal->allProcs;
+	uint64		save_queryId = pgws_proc_queryids[i];
 
 	nesting_level++;
 	PG_TRY();
@@ -1058,7 +1062,8 @@ pgws_ExecutorFinish(QueryDesc *queryDesc)
 static void
 pgws_ExecutorEnd(QueryDesc *queryDesc)
 {
-	int i = MyProc - ProcGlobal->allProcs;
+	int			i = MyProc - ProcGlobal->allProcs;
+
 	if (nesting_level == 0)
 		pgws_proc_queryids[i] = UINT64CONST(0);
 
@@ -1083,10 +1088,10 @@ pgws_ProcessUtility(PlannedStmt *pstmt,
 #else
 					char *completionTag
 #endif
-					)
+)
 {
-	int				i = MyProc - ProcGlobal->allProcs;
-	uint64			save_queryId = 0;
+	int			i = MyProc - ProcGlobal->allProcs;
+	uint64		save_queryId = 0;
 
 	if (pgws_enabled(nesting_level))
 	{
@@ -1098,18 +1103,18 @@ pgws_ProcessUtility(PlannedStmt *pstmt,
 	PG_TRY();
 	{
 		if (prev_ProcessUtility)
-			prev_ProcessUtility (pstmt, queryString,
+			prev_ProcessUtility(pstmt, queryString,
 #if PG_VERSION_NUM >= 140000
-								 readOnlyTree,
+								readOnlyTree,
 #endif
-								 context, params, queryEnv,
-								 dest,
+								context, params, queryEnv,
+								dest,
 #if PG_VERSION_NUM >= 130000
-								 qc
+								qc
 #else
-								 completionTag
+								completionTag
 #endif
-								 );
+				);
 		else
 			standard_ProcessUtility(pstmt, queryString,
 #if PG_VERSION_NUM >= 140000
@@ -1122,7 +1127,7 @@ pgws_ProcessUtility(PlannedStmt *pstmt,
 #else
 									completionTag
 #endif
-									);
+				);
 		nesting_level--;
 		if (nesting_level == 0)
 			pgws_proc_queryids[i] = UINT64CONST(0);
