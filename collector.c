@@ -11,7 +11,6 @@
 
 #include <signal.h>
 
-#include "common/hashfn.h"
 #include "compat.h"
 #include "miscadmin.h"
 #include "pg_wait_sampling.h"
@@ -288,9 +287,6 @@ make_profile_hash()
 {
 	HASHCTL		hash_ctl;
 
-	hash_ctl.hash = tag_hash;
-	hash_ctl.hcxt = TopMemoryContext;
-
 	if (pgws_profileQueries)
 		hash_ctl.keysize = offsetof(ProfileItem, count);
 	else
@@ -298,7 +294,7 @@ make_profile_hash()
 
 	hash_ctl.entrysize = sizeof(ProfileItem);
 	return hash_create("Waits profile hash", 1024, &hash_ctl,
-					   HASH_FUNCTION | HASH_ELEM);
+					   HASH_ELEM | HASH_BLOBS);
 }
 
 /*
