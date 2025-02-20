@@ -131,6 +131,7 @@ get_next_observation(History *observations)
 {
 	HistoryItem *result;
 
+	/* Check for wraparound */
 	if (observations->index >= observations->count)
 	{
 		observations->index = 0;
@@ -217,6 +218,7 @@ send_history(History *observations, shm_mq_handle *mqh)
 	else
 		count = observations->index;
 
+	/* Send array size first since receive_array expects this */
 	mq_result = shm_mq_send_compat(mqh, sizeof(count), &count, false, true);
 	if (mq_result == SHM_MQ_DETACHED)
 	{
@@ -253,6 +255,7 @@ send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 	Size		count = hash_get_num_entries(profile_hash);
 	shm_mq_result mq_result;
 
+	/* Send array size first since receive_array expects this */
 	mq_result = shm_mq_send_compat(mqh, sizeof(count), &count, false, true);
 	if (mq_result == SHM_MQ_DETACHED)
 	{
@@ -380,7 +383,7 @@ pgws_collector_main(Datum main_arg)
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 
-		/* Wait calculate time to next sample for history or profile */
+		/* Calculate time to next sample for history or profile */
 		current_ts = GetCurrentTimestamp();
 
 		history_diff = millisecs_diff(history_ts, current_ts);

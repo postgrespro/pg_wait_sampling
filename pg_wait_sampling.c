@@ -44,7 +44,7 @@ void		_PG_init(void);
 
 static bool shmem_initialized = false;
 
-/* Hooks */
+/* Hooks variables */
 static ExecutorStart_hook_type prev_ExecutorStart = NULL;
 static ExecutorRun_hook_type prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
@@ -65,6 +65,7 @@ static shm_mq *recv_mq = NULL;
 static shm_mq_handle *recv_mqh = NULL;
 static LOCKTAG queueTag;
 
+/* Hook functions */
 #if PG_VERSION_NUM >= 150000
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
 #endif
@@ -126,7 +127,6 @@ static const struct config_enum_entry pgws_profile_queries_options[] =
 	{NULL, 0, false}
 };
 
-/* GUC variables */
 int			pgws_historySize = 5000;
 int			pgws_historyPeriod = 10;
 int			pgws_profilePeriod = 10;
@@ -253,6 +253,7 @@ pgws_shmem_startup(void)
 
 	if (!found)
 	{
+		/* Create shared objects */
 		toc = shm_toc_create(PG_WAIT_SAMPLING_MAGIC, pgws, segsize);
 
 		pgws_collector_hdr = shm_toc_allocate(toc, sizeof(CollectorShmqHeader));
@@ -266,6 +267,7 @@ pgws_shmem_startup(void)
 	}
 	else
 	{
+		/* Attach to existing shared objects */
 		toc = shm_toc_attach(PG_WAIT_SAMPLING_MAGIC, pgws);
 		pgws_collector_hdr = shm_toc_lookup(toc, 0, false);
 		pgws_collector_mq = shm_toc_lookup(toc, 1, false);
@@ -522,6 +524,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 
 		if (!PG_ARGISNULL(0))
 		{
+			/* pg_wait_sampling_get_current(pid int4) function */
 			HistoryItem *item;
 			PGPROC	   *proc;
 
@@ -535,6 +538,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		}
 		else
 		{
+			/* pg_wait_sampling_current view */
 			int			procCount = ProcGlobal->allProcCount,
 						i,
 						j = 0;
@@ -600,6 +604,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 	}
 	else
 	{
+		/* nothing left */
 		SRF_RETURN_DONE(funcctx);
 	}
 }
@@ -621,6 +626,7 @@ pgws_init_lock_tag(LOCKTAG *tag, uint32 lock)
 	tag->locktag_lockmethodid = USER_LOCKMETHOD;
 }
 
+/* Get array (history or profile data) from shared memory */
 static void *
 receive_array(SHMRequest request, Size item_size, Size *count)
 {
