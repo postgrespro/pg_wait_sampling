@@ -330,15 +330,8 @@ pgws_collector_main(Datum main_arg)
 	/*
 	 * Establish signal handlers.
 	 *
-	 * We want CHECK_FOR_INTERRUPTS() to kill off this worker process just as
-	 * it would a normal user backend.  To make that happen, we establish a
-	 * signal handler that is a stripped-down version of die().  We don't have
-	 * any equivalent of the backend's command-read loop, where interrupts can
-	 * be processed immediately, so make sure ImmediateInterruptOK is turned
-	 * off.
-	 *
-	 * We also want to respond to the ProcSignal notifications.  This is done
-	 * in the upstream provided procsignal_sigusr1_handler, which is
+	 * We want to respond to the ProcSignal notifications.  This is done in
+	 * the upstream provided procsignal_sigusr1_handler, which is
 	 * automatically used if a bgworker connects to a database.  But since our
 	 * worker doesn't connect to any database even though it calls
 	 * InitPostgres, which will still initializze a new backend and thus
@@ -489,12 +482,6 @@ pgws_collector_main(Datum main_arg)
 
 	MemoryContextReset(collector_context);
 
-	/*
-	 * We're done.  Explicitly detach the shared memory segment so that we
-	 * don't get a resource leak warning at commit time.  This will fire any
-	 * on_dsm_detach callbacks we've registered, as well.  Once that's done,
-	 * we can go ahead and exit.
-	 */
 	ereport(LOG, (errmsg("pg_wait_sampling collector shutting down")));
 	proc_exit(0);
 }
