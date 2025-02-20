@@ -2,7 +2,7 @@
  * collector.c
  *		Collector of wait event history and profile.
  *
- * Copyright (c) 2015-2016, Postgres Professional
+ * Copyright (c) 2015-2025, Postgres Professional
  *
  * IDENTIFICATION
  *	  contrib/pg_wait_sampling/pg_wait_sampling.c

@@ -2,7 +2,7 @@
  * pg_wait_sampling.c
  *		Track information about wait events.
  *
- * Copyright (c) 2015-2017, Postgres Professional
+ * Copyright (c) 2015-2025, Postgres Professional
  *
  * IDENTIFICATION
  *	  contrib/pg_wait_sampling/pg_wait_sampling.c

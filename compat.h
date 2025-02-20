@@ -2,7 +2,7 @@
  * compat.h
  *		Definitions for function wrappers compatible between PG versions.
  *
- * Copyright (c) 2015-2022, Postgres Professional
+ * Copyright (c) 2015-2025, Postgres Professional
  *
  * IDENTIFICATION
  *	  contrib/pg_wait_sampling/compat.h
