@@ -10,11 +10,10 @@
 #ifndef __PG_WAIT_SAMPLING_H__
 #define __PG_WAIT_SAMPLING_H__
 
-#include "postgres.h"
-
-#include "storage/proc.h"
+#include "datatype/timestamp.h"
+#include "storage/latch.h"
+#include "storage/lock.h"
 #include "storage/shm_mq.h"
-#include "utils/timestamp.h"
 
 #define	PG_WAIT_SAMPLING_MAGIC		0xCA94B107
 #define COLLECTOR_QUEUE_SIZE		(16 * 1024)

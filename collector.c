@@ -9,26 +9,27 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_type.h"
-#if PG_VERSION_NUM >= 130000
+#include <signal.h>
+
 #include "common/hashfn.h"
-#endif
-#include "funcapi.h"
+#include "compat.h"
 #include "miscadmin.h"
+#include "pg_wait_sampling.h"
+#include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/interrupt.h"
 #include "storage/ipc.h"
-#include "storage/procarray.h"
+#include "storage/latch.h"
+#include "storage/lock.h"
+#include "storage/lwlock.h"
+#include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/shm_mq.h"
-#include "storage/shm_toc.h"
-#include "storage/spin.h"
+#include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
-#include "pgstat.h"
-
-#include "compat.h"
-#include "pg_wait_sampling.h"
+#include "utils/timestamp.h"
 
 static volatile sig_atomic_t shutdown_requested = false;
 

@@ -10,12 +10,8 @@
 #ifndef __COMPAT_H__
 #define __COMPAT_H__
 
-#include "postgres.h"
-
-#include "access/tupdesc.h"
 #include "miscadmin.h"
 #include "storage/shm_mq.h"
-#include "utils/guc_tables.h"
 
 static inline shm_mq_result
 shm_mq_send_compat(shm_mq_handle *mqh, Size nbytes, const void *data,

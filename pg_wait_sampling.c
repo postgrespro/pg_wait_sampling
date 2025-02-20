@@ -9,32 +9,34 @@
  */
 #include "postgres.h"
 
+#include <limits.h>
+
 #include "access/htup_details.h"
-#include "access/twophase.h"
-#include "catalog/pg_type.h"
-#include "fmgr.h"
+#include "catalog/pg_type_d.h"
+#include "executor/executor.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "optimizer/planner.h"
+#include "pg_wait_sampling.h"
 #include "pgstat.h"
-#include "postmaster/autovacuum.h"
-#include "replication/walsender.h"
 #include "storage/ipc.h"
-#include "storage/pg_shmem.h"
-#include "storage/procarray.h"
+#include "storage/latch.h"
+#include "storage/lock.h"
+#include "storage/lwlock.h"
+#include "storage/proc.h"
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
-#include "storage/spin.h"
+#include "storage/shmem.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
-#include "utils/datetime.h"
-#include "utils/guc_tables.h"
 #include "utils/guc.h"
-#include "utils/memutils.h" /* TopMemoryContext.  Actually for PG 9.6 only,
-							 * but there should be no harm for others. */
+#include "utils/memutils.h"
+#include "utils/timestamp.h"
 
-#include "compat.h"
-#include "pg_wait_sampling.h"
+#if PG_VERSION_NUM < 150000
+#include "postmaster/autovacuum.h"
+#include "replication/walsender.h"
+#endif
 
 PG_MODULE_MAGIC;
 
