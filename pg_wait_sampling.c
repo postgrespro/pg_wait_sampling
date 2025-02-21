@@ -73,7 +73,13 @@ static PlannedStmt *pgws_planner_hook(Query *parse,
 		const char *query_string,
 #endif
 		int cursorOptions, ParamListInfo boundParams);
-static void pgws_ExecutorStart(QueryDesc *queryDesc, int eflags);
+static
+#if PG_VERSION_NUM >= 180000
+bool
+#else
+void
+#endif
+pgws_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgws_ExecutorRun(QueryDesc *queryDesc,
 							 ScanDirection direction,
 							 uint64 count
@@ -965,16 +971,21 @@ pgws_planner_hook(Query *parse,
 /*
  * ExecutorStart hook: save queryId for collector
  */
-static void
+static
+#if PG_VERSION_NUM >= 180000
+bool
+#else
+void
+#endif
 pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
 	int i = MyProc - ProcGlobal->allProcs;
 	if (pgws_enabled(nesting_level))
 		pgws_proc_queryids[i] = queryDesc->plannedstmt->queryId;
 	if (prev_ExecutorStart)
-		prev_ExecutorStart(queryDesc, eflags);
+		return prev_ExecutorStart(queryDesc, eflags);
 	else
-		standard_ExecutorStart(queryDesc, eflags);
+		return standard_ExecutorStart(queryDesc, eflags);
 }
 
 static void
