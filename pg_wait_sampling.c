@@ -375,7 +375,7 @@ _PG_init(void)
 							1,
 							INT_MAX,
 							PGC_SIGHUP,
-							GUC_UNIT_MS,
+							0,
 							NULL,
 							NULL,
 							NULL);
@@ -388,7 +388,7 @@ _PG_init(void)
 							1,
 							INT_MAX,
 							PGC_SIGHUP,
-							GUC_UNIT_MS,
+							0,
 							NULL,
 							NULL,
 							NULL);
