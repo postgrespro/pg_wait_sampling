@@ -142,15 +142,15 @@ bool		pgws_sampleCpu = true;
 
 #define pgws_enabled(level) \
 	((pgws_profileQueries == PGWS_PROFILE_QUERIES_ALL) || \
-	(pgws_profileQueries == PGWS_PROFILE_QUERIES_TOP && (level) == 0))
+	 (pgws_profileQueries == PGWS_PROFILE_QUERIES_TOP && (level) == 0))
 
 /*
-* Calculate max processes count.
-*
-* The value has to be in sync with ProcGlobal->allProcCount, initialized in
-* InitProcGlobal() (proc.c).
-*
-*/
+ * Calculate max processes count.
+ *
+ * The value has to be in sync with ProcGlobal->allProcCount, initialized in
+ * InitProcGlobal() (proc.c).
+ *
+ */
 static int
 get_max_procs_count(void)
 {
@@ -160,39 +160,39 @@ get_max_procs_count(void)
 #if PG_VERSION_NUM >= 150000
 
 	/*
-	* On pg15+, we can directly access the MaxBackends variable, as it will
-	* have already been initialized in shmem_request_hook.
-	*/
+	 * On pg15+, we can directly access the MaxBackends variable, as it will
+	 * have already been initialized in shmem_request_hook.
+	 */
 	Assert(MaxBackends > 0);
 	count += MaxBackends;
 #else
 
 	/*
-	* On older versions, we need to compute MaxBackends: bgworkers,
-	* autovacuum workers and launcher. This has to be in sync with the value
-	* computed in InitializeMaxBackends() (postinit.c)
-	*
-	* Note that we need to calculate the value as it won't initialized when
-	* we need it during _PG_init().
-	*
-	* Note also that the value returned during _PG_init() might be different
-	* from the value returned later if some third-party modules change one of
-	* the underlying GUC.  This isn't ideal but can't lead to a crash, as the
-	* value returned during _PG_init() is only used to ask for additional
-	* shmem with RequestAddinShmemSpace(), and postgres has an extra 100kB of
-	* shmem to compensate some small unaccounted usage.  So if the value
-	* later changes, we will allocate and initialize the new (and correct)
-	* memory size, which will either work thanks for the extra 100kB of
-	* shmem, of fail (and prevent postgres startup) due to an out of shared
-	* memory error.
-	*/
+	 * On older versions, we need to compute MaxBackends: bgworkers,
+	 * autovacuum workers and launcher. This has to be in sync with the value
+	 * computed in InitializeMaxBackends() (postinit.c)
+	 *
+	 * Note that we need to calculate the value as it won't initialized when
+	 * we need it during _PG_init().
+	 *
+	 * Note also that the value returned during _PG_init() might be different
+	 * from the value returned later if some third-party modules change one of
+	 * the underlying GUC.  This isn't ideal but can't lead to a crash, as the
+	 * value returned during _PG_init() is only used to ask for additional
+	 * shmem with RequestAddinShmemSpace(), and postgres has an extra 100kB of
+	 * shmem to compensate some small unaccounted usage.  So if the value
+	 * later changes, we will allocate and initialize the new (and correct)
+	 * memory size, which will either work thanks for the extra 100kB of
+	 * shmem, of fail (and prevent postgres startup) due to an out of shared
+	 * memory error.
+	 */
 	count += MaxConnections + autovacuum_max_workers + 1
 		+ max_worker_processes;
 
 	/*
-	* Starting with pg12, wal senders aren't part of MaxConnections anymore
-	* and have to be accounted for.
-	*/
+	 * Starting with pg12, wal senders aren't part of MaxConnections anymore
+	 * and have to be accounted for.
+	 */
 	count += max_wal_senders;
 #endif							/* pg 15- */
 	/* End of MaxBackends calculation. */
@@ -204,8 +204,8 @@ get_max_procs_count(void)
 }
 
 /*
-* Estimate amount of shared memory needed.
-*/
+ * Estimate amount of shared memory needed.
+ */
 static Size
 pgws_shmem_size(void)
 {
@@ -267,7 +267,7 @@ pgws_shmem_startup(void)
 		pgws_collector_mq = shm_toc_allocate(toc, COLLECTOR_QUEUE_SIZE);
 		shm_toc_insert(toc, 1, pgws_collector_mq);
 		pgws_proc_queryids = shm_toc_allocate(toc,
-											sizeof(uint64) * get_max_procs_count());
+											  sizeof(uint64) * get_max_procs_count());
 		shm_toc_insert(toc, 2, pgws_proc_queryids);
 		MemSet(pgws_proc_queryids, 0, sizeof(uint64) * get_max_procs_count());
 	}
@@ -287,8 +287,8 @@ pgws_shmem_startup(void)
 }
 
 /*
-* Check shared memory is initialized. Report an error otherwise.
-*/
+ * Check shared memory is initialized. Report an error otherwise.
+ */
 static void
 check_shmem(void)
 {
@@ -308,8 +308,8 @@ pgws_cleanup_callback(int code, Datum arg)
 }
 
 /*
-* Module load callback
-*/
+ * Module load callback
+ */
 void
 _PG_init(void)
 {
@@ -319,21 +319,21 @@ _PG_init(void)
 #if PG_VERSION_NUM < 150000
 
 	/*
-	* Request additional shared resources.  (These are no-ops if we're not in
-	* the postmaster process.)  We'll allocate or attach to the shared
-	* resources in pgws_shmem_startup().
-	*
-	* If you change code here, don't forget to also report the modifications
-	* in pgsp_shmem_request() for pg15 and later.
-	*/
+	 * Request additional shared resources.  (These are no-ops if we're not in
+	 * the postmaster process.)  We'll allocate or attach to the shared
+	 * resources in pgws_shmem_startup().
+	 *
+	 * If you change code here, don't forget to also report the modifications
+	 * in pgsp_shmem_request() for pg15 and later.
+	 */
 	RequestAddinShmemSpace(pgws_shmem_size());
 #endif
 
 	pgws_register_wait_collector();
 
 	/*
-	* Install hooks.
-	*/
+	 * Install hooks.
+	 */
 #if PG_VERSION_NUM >= 150000
 	prev_shmem_request_hook = shmem_request_hook;
 	shmem_request_hook = pgws_shmem_request;
@@ -394,38 +394,38 @@ _PG_init(void)
 							NULL);
 
 	DefineCustomBoolVariable("pg_wait_sampling.profile_pid",
-							"Sets whether profile should be collected per pid.",
-							NULL,
-							&pgws_profilePid,
-							true,
-							PGC_SIGHUP,
-							0,
-							NULL,
-							NULL,
-							NULL);
+							 "Sets whether profile should be collected per pid.",
+							 NULL,
+							 &pgws_profilePid,
+							 true,
+							 PGC_SIGHUP,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
 
 	DefineCustomEnumVariable("pg_wait_sampling.profile_queries",
-							"Sets whether profile should be collected per query.",
-							NULL,
-							&pgws_profileQueries,
-							PGWS_PROFILE_QUERIES_TOP,
-							pgws_profile_queries_options,
-							PGC_SIGHUP,
-							0,
-							NULL,
-							NULL,
-							NULL);
+							 "Sets whether profile should be collected per query.",
+							 NULL,
+							 &pgws_profileQueries,
+							 PGWS_PROFILE_QUERIES_TOP,
+							 pgws_profile_queries_options,
+							 PGC_SIGHUP,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
 
 	DefineCustomBoolVariable("pg_wait_sampling.sample_cpu",
-							"Sets whether not waiting backends should be sampled.",
-							NULL,
-							&pgws_sampleCpu,
-							true,
-							PGC_SIGHUP,
-							0,
-							NULL,
-							NULL,
-							NULL);
+							 "Sets whether not waiting backends should be sampled.",
+							 NULL,
+							 &pgws_sampleCpu,
+							 true,
+							 PGC_SIGHUP,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
 
 #if PG_VERSION_NUM >= 150000
 	MarkGUCPrefixReserved("pg_wait_sampling");
@@ -433,9 +433,9 @@ _PG_init(void)
 }
 
 /*
-* Find PGPROC entry responsible for given pid assuming ProcArrayLock was
-* already taken.
-*/
+ * Find PGPROC entry responsible for given pid assuming ProcArrayLock was
+ * already taken.
+ */
 static PGPROC *
 search_proc(int pid)
 {
@@ -460,9 +460,9 @@ search_proc(int pid)
 }
 
 /*
-* Decide whether this PGPROC entry should be included in profiles and output
-* views.
-*/
+ * Decide whether this PGPROC entry should be included in profiles and output
+ * views.
+ */
 bool
 pgws_should_sample_proc(PGPROC *proc, int *pid_p, uint32 *wait_event_info_p)
 {
@@ -476,11 +476,11 @@ pgws_should_sample_proc(PGPROC *proc, int *pid_p, uint32 *wait_event_info_p)
 		return false;
 
 	/*
-	* On PostgreSQL versions < 17 the PGPROC->pid field is not reset on
-	* process exit. This would lead to such processes getting counted for
-	* null wait events. So instead we make use of DisownLatch() resetting
-	* owner_pid during ProcKill().
-	*/
+	 * On PostgreSQL versions < 17 the PGPROC->pid field is not reset on
+	 * process exit. This would lead to such processes getting counted for
+	 * null wait events. So instead we make use of DisownLatch() resetting
+	 * owner_pid during ProcKill().
+	 */
 	if (pid == 0 || proc->procLatch.owner_pid == 0 || pid == MyProcPid)
 		return false;
 
@@ -516,19 +516,19 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		funcctx->user_fctx = params;
 		tupdesc = CreateTemplateTupleDesc(7);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						INT4OID, -1, 0);
+						  INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
-						TEXTOID, -1, 0);
+						  TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
-						TEXTOID, -1, 0);
+						  TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
-						INT8OID, -1, 0),
+						  INT8OID, -1, 0),
 		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "isregularbackend",
-												BOOLOID, -1, 0),
+						  BOOLOID, -1, 0),
 				TupleDescInitEntry(tupdesc, (AttrNumber) 6, "databaseid",
-												OIDOID, -1, 0),
+						  OIDOID, -1, 0),
 				TupleDescInitEntry(tupdesc, (AttrNumber) 7, "roleid",
-												OIDOID, -1, 0);
+						  OIDOID, -1, 0);
 
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -564,8 +564,8 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 				PGPROC	   *proc = &ProcGlobal->allProcs[i];
 
 				if (!pgws_should_sample_proc(proc,
-											&params->items[j].pid,
-											&params->items[j].wait_event_info))
+											 &params->items[j].pid,
+											 &params->items[j].wait_event_info))
 					continue;
 
 				params->items[j].pid = proc->pid;
@@ -594,7 +594,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		Datum		values[7];
 		bool		nulls[7];
 		const char *event_type,
-				*event;
+				   *event;
 		HistoryItem *item;
 
 		item = &params->items[funcctx->call_cntr];
@@ -679,26 +679,26 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	shm_mq_set_receiver(recv_mq, MyProc);
 
 	/*
-	* We switch to TopMemoryContext, so that recv_mqh is allocated there and
-	* is guaranteed to survive until before_shmem_exit callbacks are fired.
-	* Anyway, shm_mq_detach() will free handler on its own.
-	*
-	* NB: we do not pass `seg` to shm_mq_attach(), so it won't set its own
-	* callback, i.e. we do not interfere here with shm_mq_detach_callback().
-	*/
+	 * We switch to TopMemoryContext, so that recv_mqh is allocated there and
+	 * is guaranteed to survive until before_shmem_exit callbacks are fired.
+	 * Anyway, shm_mq_detach() will free handler on its own.
+	 *
+	 * NB: we do not pass `seg` to shm_mq_attach(), so it won't set its own
+	 * callback, i.e. we do not interfere here with shm_mq_detach_callback().
+	 */
 	oldctx = MemoryContextSwitchTo(TopMemoryContext);
 	recv_mqh = shm_mq_attach(recv_mq, NULL, NULL);
 	MemoryContextSwitchTo(oldctx);
 
 	/*
-	* Now we surely attached to the shm_mq and got collector's attention. If
-	* anything went wrong (e.g. Ctrl+C received from the client) we have to
-	* cleanup some things, i.e. detach from the shm_mq, so collector was able
-	* to continue responding to other requests.
-	*
-	* PG_ENSURE_ERROR_CLEANUP() guaranties that cleanup callback will be
-	* fired for both ERROR and FATAL.
-	*/
+	 * Now we surely attached to the shm_mq and got collector's attention. If
+	 * anything went wrong (e.g. Ctrl+C received from the client) we have to
+	 * cleanup some things, i.e. detach from the shm_mq, so collector was able
+	 * to continue responding to other requests.
+	 *
+	 * PG_ENSURE_ERROR_CLEANUP() guaranties that cleanup callback will be
+	 * fired for both ERROR and FATAL.
+	 */
 	PG_ENSURE_ERROR_CLEANUP(pgws_cleanup_callback, 0);
 	{
 		res = shm_mq_receive(recv_mqh, &len, &data, false);
@@ -750,7 +750,7 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		/* Receive profile from shmq */
 		profile = (Profile *) palloc0(sizeof(Profile));
 		profile->items = (ProfileItem *) receive_array(PROFILE_REQUEST,
-													sizeof(ProfileItem), &profile->count);
+													   sizeof(ProfileItem), &profile->count);
 
 		funcctx->user_fctx = profile;
 		funcctx->max_calls = profile->count;
@@ -758,15 +758,15 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		/* Make tuple descriptor */
 		tupdesc = CreateTemplateTupleDesc(5);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						INT4OID, -1, 0);
+						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
-						TEXTOID, -1, 0);
+						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
-						TEXTOID, -1, 0);
+						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
-						INT8OID, -1, 0);
+						   INT8OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "count",
-						INT8OID, -1, 0);
+						   INT8OID, -1, 0);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
 		MemoryContextSwitchTo(oldcontext);
@@ -785,7 +785,7 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		HeapTuple	tuple;
 		ProfileItem *item;
 		const char *event_type,
-				*event;
+				   *event;
 
 		item = &profile->items[funcctx->call_cntr];
 
@@ -867,7 +867,7 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		/* Receive history from shmq */
 		history = (History *) palloc0(sizeof(History));
 		history->items = (HistoryItem *) receive_array(HISTORY_REQUEST,
-													sizeof(HistoryItem), &history->count);
+													   sizeof(HistoryItem), &history->count);
 
 		funcctx->user_fctx = history;
 		funcctx->max_calls = history->count;
@@ -875,15 +875,15 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		/* Make tuple descriptor */
 		tupdesc = CreateTemplateTupleDesc(5);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						INT4OID, -1, 0);
+						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "sample_ts",
-						TIMESTAMPTZOID, -1, 0);
+						   TIMESTAMPTZOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "type",
-						TEXTOID, -1, 0);
+						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "event",
-						TEXTOID, -1, 0);
+						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "queryid",
-						INT8OID, -1, 0);
+						   INT8OID, -1, 0);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
 		MemoryContextSwitchTo(oldcontext);
