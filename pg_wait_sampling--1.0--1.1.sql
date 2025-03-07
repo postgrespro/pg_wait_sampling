@@ -22,11 +22,14 @@ DROP FUNCTION pg_wait_sampling_get_profile (
 ) CASCADE;
 
 CREATE FUNCTION pg_wait_sampling_get_current (
-	pid int4,
-	OUT pid int4,
-	OUT event_type text,
-	OUT event text,
-	OUT queryid int8
+        pid int4,
+        OUT pid int4,
+        OUT event_type text,
+        OUT event text,
+        OUT queryid int8,
+        OUT isregularbackend boolean,
+        OUT databaseid oid,
+        OUT roleid oid
 )
 RETURNS SETOF record
 AS 'MODULE_PATHNAME'
