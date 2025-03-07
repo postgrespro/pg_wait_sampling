@@ -1,12 +1,12 @@
 /*
-* pg_wait_sampling.c
-*		Track information about wait events.
-*
-* Copyright (c) 2015-2025, Postgres Professional
-*
-* IDENTIFICATION
-*	  contrib/pg_wait_sampling/pg_wait_sampling.c
-*/
+ * pg_wait_sampling.c
+ *		Track information about wait events.
+ *
+ * Copyright (c) 2015-2025, Postgres Professional
+ *
+ * IDENTIFICATION
+ *	  contrib/pg_wait_sampling/pg_wait_sampling.c
+ */
 #include "postgres.h"
 
 #include <limits.h>
@@ -73,9 +73,9 @@ static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static PGPROC *search_proc(int backendPid);
 static PlannedStmt *pgws_planner_hook(Query *parse,
 #if PG_VERSION_NUM >= 130000
-									const char *query_string,
+									  const char *query_string,
 #endif
-									int cursorOptions, ParamListInfo boundParams);
+									  int cursorOptions, ParamListInfo boundParams);
 static
 #if PG_VERSION_NUM >= 180000
 bool
@@ -84,10 +84,10 @@ void
 #endif
 pgws_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgws_ExecutorRun(QueryDesc *queryDesc,
-							ScanDirection direction,
-							uint64 count
+							 ScanDirection direction,
+							 uint64 count
 #if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
-							,bool execute_once
+							 ,bool execute_once
 #endif
 );
 static void pgws_ExecutorFinish(QueryDesc *queryDesc);
