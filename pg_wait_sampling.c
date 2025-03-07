@@ -229,11 +229,11 @@ pgws_shmem_size(void)
 
 #if PG_VERSION_NUM >= 150000
 /*
-* shmem_request hook: request additional shared memory resources.
-*
-* If you change code here, don't forget to also report the modifications in
-* _PG_init() for pg14 and below.
-*/
+ * shmem_request hook: request additional shared memory resources.
+ *
+ * If you change code here, don't forget to also report the modifications in
+ * _PG_init() for pg14 and below.
+ */
 static void
 pgws_shmem_request(void)
 {
@@ -245,8 +245,8 @@ pgws_shmem_request(void)
 #endif
 
 /*
-* Distribute shared memory.
-*/
+ * Distribute shared memory.
+ */
 static void
 pgws_shmem_startup(void)
 {
@@ -516,19 +516,19 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		funcctx->user_fctx = params;
 		tupdesc = CreateTemplateTupleDesc(7);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						  INT4OID, -1, 0);
+						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
-						  TEXTOID, -1, 0);
+						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
-						  TEXTOID, -1, 0);
+						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
-						  INT8OID, -1, 0),
+						   INT8OID, -1, 0),
 		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "isregularbackend",
-						  BOOLOID, -1, 0),
+						   BOOLOID, -1, 0),
 				TupleDescInitEntry(tupdesc, (AttrNumber) 6, "databaseid",
-						  OIDOID, -1, 0),
+						   OIDOID, -1, 0),
 				TupleDescInitEntry(tupdesc, (AttrNumber) 7, "roleid",
-						  OIDOID, -1, 0);
+						   OIDOID, -1, 0);
 
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -901,7 +901,7 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		Datum		values[5];
 		bool		nulls[5];
 		const char *event_type,
-				*event;
+				   *event;
 
 		item = &history->items[history->index];
 
@@ -938,15 +938,15 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 }
 
 /*
-* planner_hook hook, save queryId for collector
-*/
+ * planner_hook hook, save queryId for collector
+ */
 static PlannedStmt *
 pgws_planner_hook(Query *parse,
 #if PG_VERSION_NUM >= 130000
-				const char *query_string,
+				  const char *query_string,
 #endif
-				int cursorOptions,
-				ParamListInfo boundParams)
+				  int cursorOptions,
+				  ParamListInfo boundParams)
 {
 	PlannedStmt *result;
 	int			i = MyProc - ProcGlobal->allProcs;
@@ -965,15 +965,15 @@ pgws_planner_hook(Query *parse,
 		if (planner_hook_next)
 			result = planner_hook_next(parse,
 #if PG_VERSION_NUM >= 130000
-									query_string,
+									   query_string,
 #endif
-									cursorOptions, boundParams);
+									   cursorOptions, boundParams);
 		else
 			result = standard_planner(parse,
 #if PG_VERSION_NUM >= 130000
-									query_string,
+									  query_string,
 #endif
-									cursorOptions, boundParams);
+									  cursorOptions, boundParams);
 		nesting_level--;
 		if (nesting_level == 0)
 			pgws_proc_queryids[i] = UINT64CONST(0);
@@ -995,8 +995,8 @@ pgws_planner_hook(Query *parse,
 }
 
 /*
-* ExecutorStart hook: save queryId for collector
-*/
+ * ExecutorStart hook: save queryId for collector
+ */
 static
 #if PG_VERSION_NUM >= 180000
 bool
@@ -1017,10 +1017,10 @@ pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
 static void
 pgws_ExecutorRun(QueryDesc *queryDesc,
-				ScanDirection direction,
-				uint64 count
+				 ScanDirection direction,
+				 uint64 count
 #if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
-				,bool execute_once
+				 ,bool execute_once
 #endif
 )
 {
@@ -1089,8 +1089,8 @@ pgws_ExecutorFinish(QueryDesc *queryDesc)
 }
 
 /*
-* ExecutorEnd hook: clear queryId
-*/
+ * ExecutorEnd hook: clear queryId
+ */
 static void
 pgws_ExecutorEnd(QueryDesc *queryDesc)
 {
