@@ -10,6 +10,7 @@
 #include "postgres.h"
 
 #include <signal.h>
+#include <time.h>
 
 #include "compat.h"
 #include "miscadmin.h"
@@ -30,6 +31,13 @@
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
 
+#define check_bestatus_dimensions(dimensions) \
+					   (dimensions & (PGWS_DIMENSIONS_BE_TYPE |\
+									  PGWS_DIMENSIONS_BE_STATE |\
+									  PGWS_DIMENSIONS_BE_START_TIME |\
+									  PGWS_DIMENSIONS_CLIENT_ADDR |\
+									  PGWS_DIMENSIONS_CLIENT_HOSTNAME |\
+									  PGWS_DIMENSIONS_APPNAME))
 static volatile sig_atomic_t shutdown_requested = false;
 
 static void handle_sigterm(SIGNAL_ARGS);
@@ -162,25 +170,103 @@ probe_waits(History *observations, HTAB *profile_hash,
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 	for (i = 0; i < ProcGlobal->allProcCount; i++)
 	{
-		HistoryItem item,
+		HistoryItem item_history,
 				   *observation;
+		ProfileItem item_profile;
 		PGPROC	   *proc = &ProcGlobal->allProcs[i];
+		int 		pid;
+		uint32		wait_event_info;
 
-		if (!pgws_should_sample_proc(proc, &item.pid, &item.wait_event_info))
+		/* Check if we need to sample this process */
+		if (!pgws_should_sample_proc(proc, &pid, &wait_event_info))
 			continue;
 
-		if (pgws_profileQueries)
-			item.queryId = pgws_proc_queryids[i];
-		else
-			item.queryId = 0;
+		/* We zero whole HistoryItem to avoid doing it field-by-field */
+		memset(&item_history, 0, sizeof(HistoryItem));
+		memset(&item_profile, 0, sizeof(ProfileItem));
 
-		item.ts = ts;
+		item_history.pid = pid;
+		item_profile.pid = pid;
+
+		item_history.wait_event_info = wait_event_info;
+		item_profile.wait_event_info = wait_event_info;
+
+		if (pgws_profileQueries)
+		{
+			item_history.queryId = pgws_proc_queryids[i];
+			item_profile.queryId = pgws_proc_queryids[i];
+		}
+
+		item_history.ts = ts;
+
+		/* Copy everything we need from PGPROC */
+		if (pgws_history_dimensions & PGWS_DIMENSIONS_ROLE_ID)
+			item_history.role_id = proc->roleId;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_ROLE_ID)
+			item_profile.role_id = proc->roleId;
+
+		if (pgws_history_dimensions & PGWS_DIMENSIONS_DB_ID)
+			item_history.database_id = proc->databaseId;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_DB_ID)
+			item_profile.database_id = proc->databaseId;
+
+		if (pgws_history_dimensions & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+			item_history.parallel_leader_pid = (proc->lockGroupLeader ?
+												proc->lockGroupLeader->pid :
+												0);
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+			item_profile.parallel_leader_pid = (proc->lockGroupLeader ?
+												proc->lockGroupLeader->pid :
+												0);
+		/* Look into BackendStatus only if necessary */
+		if (check_bestatus_dimensions(pgws_history_dimensions) ||
+			check_bestatus_dimensions(pgws_profile_dimensions))
+		{
+#if PG_VERSION_NUM >= 170000
+			PgBackendStatus	*bestatus = pgstat_get_beentry_by_proc_number(GetNumberFromPGProc(proc));
+#else
+			PgBackendStatus	*bestatus = get_beentry_by_procpid(proc->pid);
+#endif
+			/* Copy everything we need from BackendStatus */
+			if (bestatus)
+			{
+				if (pgws_history_dimensions & PGWS_DIMENSIONS_BE_TYPE)
+					item_history.backend_type = bestatus->st_backendType;
+				if (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_TYPE)
+					item_profile.backend_type = bestatus->st_backendType;
+
+				if (pgws_history_dimensions & PGWS_DIMENSIONS_BE_STATE)
+					item_history.backend_state = bestatus->st_state;
+				if (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_STATE)
+					item_profile.backend_state = bestatus->st_state;
+
+				if (pgws_history_dimensions & PGWS_DIMENSIONS_BE_START_TIME)
+					item_history.proc_start = bestatus->st_proc_start_timestamp;
+				if (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_START_TIME)
+					item_profile.proc_start = bestatus->st_proc_start_timestamp;
+
+				if (pgws_history_dimensions & PGWS_DIMENSIONS_CLIENT_ADDR)
+					item_history.client_addr = bestatus->st_clientaddr;
+				if (pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_ADDR)
+					item_profile.client_addr = bestatus->st_clientaddr;
+
+				if (pgws_history_dimensions & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+					strcpy(item_history.client_hostname, bestatus->st_clienthostname);
+				if (pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+					strcpy(item_profile.client_hostname, bestatus->st_clienthostname);
+
+				if (pgws_history_dimensions & PGWS_DIMENSIONS_APPNAME)
+					strcpy(item_history.appname, bestatus->st_appname);
+				if (pgws_profile_dimensions & PGWS_DIMENSIONS_APPNAME)
+					strcpy(item_profile.appname, bestatus->st_appname);
+			}
+		}
 
 		/* Write to the history if needed */
 		if (write_history)
 		{
 			observation = get_next_observation(observations);
-			*observation = item;
+			*observation = item_history;
 		}
 
 		/* Write to the profile if needed */
@@ -190,9 +276,9 @@ probe_waits(History *observations, HTAB *profile_hash,
 			bool		found;
 
 			if (!profile_pid)
-				item.pid = 0;
+				item_profile.pid = 0;
 
-			profileItem = (ProfileItem *) hash_search(profile_hash, &item, HASH_ENTER, &found);
+			profileItem = (ProfileItem *) hash_search(profile_hash, &item_profile, HASH_ENTER, &found);
 			if (found)
 				profileItem->count++;
 			else
@@ -200,6 +286,11 @@ probe_waits(History *observations, HTAB *profile_hash,
 		}
 	}
 	LWLockRelease(ProcArrayLock);
+#if PG_VERSION_NUM >= 140000
+	pgstat_clear_backend_activity_snapshot();
+#else
+	pgstat_clear_snapshot();
+#endif
 }
 
 /*
@@ -287,10 +378,12 @@ make_profile_hash()
 {
 	HASHCTL		hash_ctl;
 
-	if (pgws_profileQueries)
-		hash_ctl.keysize = offsetof(ProfileItem, count);
-	else
-		hash_ctl.keysize = offsetof(ProfileItem, queryId);
+	/*
+	 * Since adding additional dimensions we include everyting except count
+	 * into hashtable key. This is fine for cases when some fields are 0 since
+	 * it doesn't impede our ability to search the hash table for entries
+	 */
+	hash_ctl.keysize = offsetof(ProfileItem, count);
 
 	hash_ctl.entrysize = sizeof(ProfileItem);
 	return hash_create("Waits profile hash", 1024, &hash_ctl,

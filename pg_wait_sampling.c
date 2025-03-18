@@ -13,6 +13,7 @@
 
 #include "access/htup_details.h"
 #include "catalog/pg_type_d.h"
+#include "common/ip.h"
 #include "executor/executor.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -32,6 +33,7 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#include "utils/varlena.h"
 
 #if PG_VERSION_NUM < 150000
 #include "postmaster/autovacuum.h"
@@ -133,6 +135,10 @@ int			pgws_profilePeriod = 10;
 bool		pgws_profilePid = true;
 int			pgws_profileQueries = PGWS_PROFILE_QUERIES_TOP;
 bool		pgws_sampleCpu = true;
+static char *pgws_history_dimensions_string = NULL;
+static char *pgws_profile_dimensions_string = NULL;
+int			pgws_history_dimensions; /* bit mask that is derived from GUC */
+int			pgws_profile_dimensions; /* bit mask that is derived from GUC */
 
 #define pgws_enabled(level) \
 	((pgws_profileQueries == PGWS_PROFILE_QUERIES_ALL) || \
@@ -302,6 +308,109 @@ pgws_cleanup_callback(int code, Datum arg)
 }
 
 /*
+ * Check tokens of string and fill bitmask accordingly
+ * Mostly copied from plpgsql_extra_checks_check_hook
+ */
+static bool
+pgws_general_dimensions_check_hook (char **newvalue, void **extra, GucSource source)
+{
+	char	   *rawstring;
+	List	   *elemlist;
+	ListCell   *l;
+	int			extrachecks = 0;
+	int		   *myextra;
+
+	/* Check special cases when we turn all or none dimensions */
+	if (pg_strcasecmp(*newvalue, "all") == 0)
+		extrachecks = PGWS_DIMENSIONS_ALL;
+	else if (pg_strcasecmp(*newvalue, "none") == 0)
+		extrachecks = PGWS_DIMENSIONS_NONE;
+	else
+	{
+		/* Need a modifiable copy of string */
+		rawstring = pstrdup(*newvalue);
+
+		/* Parse string into list of identifiers */
+		if (!SplitIdentifierString(rawstring, ',', &elemlist))
+		{
+			/* syntax error in list */
+			GUC_check_errdetail("List syntax is invalid.");
+			pfree(rawstring);
+			list_free(elemlist);
+			return false;
+		}
+
+		/* Loop over all recieved options */
+		foreach(l, elemlist)
+		{
+			char	   *tok = (char *) lfirst(l);
+
+			/* Process all allowed values */
+			if (pg_strcasecmp(tok, "role_id") == 0)
+				extrachecks |= PGWS_DIMENSIONS_ROLE_ID;
+			else if (pg_strcasecmp(tok, "database_id") == 0)
+				extrachecks |= PGWS_DIMENSIONS_DB_ID;
+			else if (pg_strcasecmp(tok, "parallel_leader_pid") == 0)
+				extrachecks |= PGWS_DIMENSIONS_PARALLEL_LEADER_PID;
+			else if (pg_strcasecmp(tok, "backend_type") == 0)
+				extrachecks |= PGWS_DIMENSIONS_BE_TYPE;
+			else if (pg_strcasecmp(tok, "backend_state") == 0)
+				extrachecks |= PGWS_DIMENSIONS_BE_STATE;
+			else if (pg_strcasecmp(tok, "backend_start_time") == 0)
+				extrachecks |= PGWS_DIMENSIONS_BE_START_TIME;
+			else if (pg_strcasecmp(tok, "client_addr") == 0)
+				extrachecks |= PGWS_DIMENSIONS_CLIENT_ADDR;
+			else if (pg_strcasecmp(tok, "client_hostname") == 0)
+				extrachecks |= PGWS_DIMENSIONS_CLIENT_HOSTNAME;
+			else if (pg_strcasecmp(tok, "appname") == 0)
+				extrachecks |= PGWS_DIMENSIONS_APPNAME;
+			else if (pg_strcasecmp(tok, "all") == 0 || pg_strcasecmp(tok, "none") == 0)
+			{
+				GUC_check_errdetail("Key word \"%s\" cannot be combined with other key words.", tok);
+				pfree(rawstring);
+				list_free(elemlist);
+				return false;
+			}
+			else
+			{
+				GUC_check_errdetail("Unrecognized key word: \"%s\".", tok);
+				pfree(rawstring);
+				list_free(elemlist);
+				return false;
+			}
+		}
+
+		pfree(rawstring);
+		list_free(elemlist);
+	}
+#if PG_VERSION_NUM >= 160000
+	myextra = (int *) guc_malloc(LOG, sizeof(int));
+#else
+	myextra = (int *) malloc(sizeof(int));
+#endif
+	if (!myextra)
+		return false;
+	*myextra = extrachecks;
+	*extra = myextra;
+
+	return true;
+}
+
+/* Assign actual value to dimension bitmask */
+static void
+pgws_history_dimensions_assign_hook (const char *newvalue, void *extra)
+{
+	pgws_history_dimensions = *((int *) extra);
+}
+
+/* Assign actual value to dimension bitmask */
+static void
+pgws_profile_dimensions_assign_hook (const char *newvalue, void *extra)
+{
+	pgws_profile_dimensions = *((int *) extra);
+}
+
+/*
  * Module load callback
  */
 void
@@ -420,6 +529,28 @@ _PG_init(void)
 							 NULL,
 							 NULL,
 							 NULL);
+
+	DefineCustomStringVariable("pg_wait_sampling.history_dimensions",
+							   "Sets sampling dimensions for history",
+							   NULL,
+							   &pgws_history_dimensions_string,
+							   "none",
+							   PGC_SIGHUP,
+							   GUC_LIST_INPUT,
+							   pgws_general_dimensions_check_hook,
+							   pgws_history_dimensions_assign_hook,
+							   NULL);
+
+	DefineCustomStringVariable("pg_wait_sampling.profile_dimensions",
+							   "Sets sampling dimensions for profile",
+							   NULL,
+							   &pgws_profile_dimensions_string,
+							   "none",
+							   PGC_SIGHUP,
+							   GUC_LIST_INPUT,
+							   pgws_general_dimensions_check_hook,
+							   pgws_profile_dimensions_assign_hook,
+							   NULL);
 
 #if PG_VERSION_NUM >= 150000
 	MarkGUCPrefixReserved("pg_wait_sampling");
@@ -598,6 +729,332 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			nulls[2] = true;
 
 		values[3] = UInt64GetDatum(item->queryId);
+		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+
+		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+	}
+	else
+	{
+		/* nothing left */
+		SRF_RETURN_DONE(funcctx);
+	}
+}
+
+static Datum
+GetBackendState(BackendState state, bool *is_null)
+{
+	switch (state)
+	{
+#if PG_VERSION_NUM >= 180000
+		case STATE_STARTING:
+			return CStringGetTextDatum("starting");
+#endif
+		case STATE_IDLE:
+			return CStringGetTextDatum("idle");
+		case STATE_RUNNING:
+			return CStringGetTextDatum("active");
+		case STATE_IDLEINTRANSACTION:
+			return CStringGetTextDatum("idle in transaction");
+		case STATE_FASTPATH:
+			return CStringGetTextDatum("fastpath function call");
+		case STATE_IDLEINTRANSACTION_ABORTED:
+			return CStringGetTextDatum("idle in transaction (aborted)");
+		case STATE_DISABLED:
+			return CStringGetTextDatum("disabled");
+		case STATE_UNDEFINED:
+			*is_null = true;
+	}
+	return (Datum) 0;
+}
+
+/* Copied from pg_stat_get_backend_client_addr */
+static Datum
+get_backend_client_addr(SockAddr client_addr, bool *is_null)
+{
+	char		remote_host[NI_MAXHOST];
+	int			ret;
+
+	/* A zeroed client addr means we don't know */
+#if PG_VERSION_NUM >= 180000
+	if (pg_memory_is_all_zeros(&client_addr,
+							   sizeof(client_addr)))
+#else
+	SockAddr	zero_clientaddr;
+
+	memset(&zero_clientaddr, 0, sizeof(zero_clientaddr));
+	if (memcmp(&client_addr, &zero_clientaddr,
+			   sizeof(zero_clientaddr)) == 0)
+#endif
+	{
+		*is_null = true;
+		return (Datum) 0;
+	}
+
+	switch (client_addr.addr.ss_family)
+	{
+		case AF_INET:
+		case AF_INET6:
+			break;
+		default:
+			*is_null = true;
+			return (Datum) 0;
+	}
+
+	remote_host[0] = '\0';
+	ret = pg_getnameinfo_all(&client_addr.addr,
+							 client_addr.salen,
+							 remote_host, sizeof(remote_host),
+							 NULL, 0,
+							 NI_NUMERICHOST | NI_NUMERICSERV);
+	if (ret != 0)
+	{
+		*is_null = true;
+		return (Datum) 0;
+	}
+
+	clean_ipv6_addr(client_addr.addr.ss_family, remote_host);
+
+	return (DirectFunctionCall1(inet_in, CStringGetDatum(remote_host)));
+}
+
+/*
+ * Needed for PostgreSQL 16 and earlier since there is no good way to get
+ * PgBackendStatus when having only PGPROC structure.
+ *
+ * pgstat_fetch_stat_beentry (13-15) works with indices of localBackendStatusTable
+ * pgstat_get_beentry_by_backend_id (16) works with "backend_ids", but we still
+ * cannot get them without looking into LocalPgBackendStatus, so work with indices
+ *
+ * This function is very inefficient
+ *
+ * Maybe we should just iterate over localBackendStatusTable and somehow get
+ * PGPROC entries from there but it is up for discussion
+ */
+PgBackendStatus *
+get_beentry_by_procpid(int pid)
+{
+	int backend_num = pgstat_fetch_stat_numbackends(), cur_be_idx;
+
+	for (cur_be_idx = 1; cur_be_idx <= backend_num; cur_be_idx++)
+	{
+		LocalPgBackendStatus *local_beentry;
+
+#if PG_VERSION_NUM >= 160000
+		local_beentry = pgstat_get_local_beentry_by_index(cur_be_idx);
+#else
+		/* Here beid is just index in localBackendStatusTable */
+		local_beentry = pgstat_fetch_stat_local_beentry(cur_be_idx);
+#endif
+		if (local_beentry->backendStatus.st_procpid == pid)
+			return &local_beentry->backendStatus;
+	}
+	return NULL;
+}
+
+PG_FUNCTION_INFO_V1(pg_wait_sampling_get_current_extended);
+Datum
+pg_wait_sampling_get_current_extended(PG_FUNCTION_ARGS)
+{
+	FuncCallContext *funcctx;
+	WaitCurrentContext *params;
+
+	check_shmem();
+
+	/* Initialization, done only on the first call */
+	if (SRF_IS_FIRSTCALL())
+	{
+		MemoryContext oldcontext;
+		TupleDesc	tupdesc;
+
+		funcctx = SRF_FIRSTCALL_INIT();
+
+		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+		params = (WaitCurrentContext *) palloc0(sizeof(WaitCurrentContext));
+		params->ts = GetCurrentTimestamp();
+
+		funcctx->user_fctx = params;
+		/* Setup tuple desc */
+		tupdesc = CreateTemplateTupleDesc(13);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "role_id",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "database_id",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "parallel_leader_pid",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 8, "backend_type",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 9, "backend_state",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 10, "proc_start",
+						   TIMESTAMPTZOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 11, "client_addr",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 12, "client_hostname",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 13, "appname",
+						   TEXTOID, -1, 0);
+
+		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
+
+		LWLockAcquire(ProcArrayLock, LW_SHARED);
+
+		if (!PG_ARGISNULL(0))
+		{
+			/* pg_wait_sampling_get_current_extended(pid int4) function */
+			HistoryItem		*item;
+			PGPROC			*proc;
+			PgBackendStatus *bestatus;
+
+			proc = search_proc(PG_GETARG_UINT32(0));
+#if PG_VERSION_NUM >= 170000
+			bestatus = pgstat_get_beentry_by_proc_number(GetNumberFromPGProc(proc));
+#else
+			bestatus = get_beentry_by_procpid(proc->pid);
+#endif
+			params->items = (HistoryItem *) palloc0(sizeof(HistoryItem));
+			item = &params->items[0];
+			/* Show all fields without looking at GUC variables */
+			item->pid = proc->pid;
+			item->wait_event_info = proc->wait_event_info;
+			item->queryId = pgws_proc_queryids[proc - ProcGlobal->allProcs];
+			item->role_id = proc->roleId;
+			item->database_id = proc->databaseId;
+			item->parallel_leader_pid = (proc->lockGroupLeader ?
+										 proc->lockGroupLeader->pid :
+										 0);
+			if (bestatus)
+			{
+				item->backend_type = bestatus->st_backendType;
+				item->backend_state = bestatus->st_state;
+				item->proc_start = bestatus->st_proc_start_timestamp;
+				item->client_addr = bestatus->st_clientaddr;
+				strcpy(item->client_hostname, bestatus->st_clienthostname);
+				strcpy(item->appname, bestatus->st_appname);
+			}
+			funcctx->max_calls = 1;
+		}
+		else
+		{
+			/* pg_wait_sampling_current view */
+			int			procCount = ProcGlobal->allProcCount,
+						i,
+						j = 0;
+
+			params->items = (HistoryItem *) palloc0(sizeof(HistoryItem) * procCount);
+			for (i = 0; i < procCount; i++)
+			{
+				PGPROC 			*proc = &ProcGlobal->allProcs[i];
+#if PG_VERSION_NUM >= 170000
+				PgBackendStatus	*bestatus = pgstat_get_beentry_by_proc_number(GetNumberFromPGProc(proc));
+#else
+				PgBackendStatus	*bestatus = get_beentry_by_procpid(proc->pid);
+#endif
+
+				if (!pgws_should_sample_proc(proc,
+											 &params->items[j].pid,
+											 &params->items[j].wait_event_info))
+					continue;
+
+				/* Show all fields without looking at GUC variables */
+				params->items[j].pid = proc->pid;
+				params->items[j].wait_event_info = proc->wait_event_info;
+				params->items[j].queryId = pgws_proc_queryids[i];
+				params->items[j].role_id = proc->roleId;
+				params->items[j].database_id = proc->databaseId;
+				params->items[j].parallel_leader_pid = (proc->lockGroupLeader ?
+											 proc->lockGroupLeader->pid :
+											 0);
+				if (bestatus)
+				{
+					params->items[j].backend_type = bestatus->st_backendType;
+					params->items[j].backend_state = bestatus->st_state;
+					params->items[j].proc_start = bestatus->st_proc_start_timestamp;
+					params->items[j].client_addr = bestatus->st_clientaddr;
+					strcpy(params->items[j].client_hostname, bestatus->st_clienthostname);
+					strcpy(params->items[j].appname, bestatus->st_appname);
+				}
+				j++;
+			}
+			funcctx->max_calls = j;
+		}
+
+		LWLockRelease(ProcArrayLock);
+#if PG_VERSION_NUM >= 140000
+		pgstat_clear_backend_activity_snapshot();
+#else
+		pgstat_clear_snapshot();
+#endif
+
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	/* stuff done on every call of the function */
+	funcctx = SRF_PERCALL_SETUP();
+	params = (WaitCurrentContext *) funcctx->user_fctx;
+
+	if (funcctx->call_cntr < funcctx->max_calls)
+	{
+		HeapTuple	tuple;
+		Datum		values[13];
+		bool		nulls[13];
+		const char *event_type,
+				   *event,
+				   *backend_type;
+		Datum		backend_state, proc_start, client_addr;
+		bool		is_null_be_state = false,
+					is_null_client_addr = false;
+		HistoryItem *item;
+
+		item = &params->items[funcctx->call_cntr];
+
+		/* Make and return next tuple to caller */
+		MemSet(values, 0, sizeof(values));
+		MemSet(nulls, 0, sizeof(nulls));
+
+		event_type = pgstat_get_wait_event_type(item->wait_event_info);
+		event = pgstat_get_wait_event(item->wait_event_info);
+		backend_type = GetBackendTypeDesc(item->backend_type);
+		backend_state = GetBackendState(item->backend_state, &is_null_be_state);
+		proc_start = TimestampTzGetDatum(item->proc_start);
+		client_addr = get_backend_client_addr(item->client_addr, &is_null_client_addr);
+
+		values[0] = Int32GetDatum(item->pid);
+		if (event_type)
+			values[1] = PointerGetDatum(cstring_to_text(event_type));
+		else
+			nulls[1] = true;
+		if (event)
+			values[2] = PointerGetDatum(cstring_to_text(event));
+		else
+			nulls[2] = true;
+		values[3] = UInt64GetDatum(item->queryId);
+		values[4] = ObjectIdGetDatum(item->role_id);
+		values[5] = ObjectIdGetDatum(item->database_id);
+		values[6] = Int32GetDatum(item->parallel_leader_pid);
+		if (backend_type)
+			values[7] = PointerGetDatum(cstring_to_text(backend_type));
+		else
+			nulls[7] = true;
+		if (!is_null_be_state)
+			values[8] = backend_state;
+		else
+			nulls[8] = true;
+		values[9] = proc_start;
+		if (!is_null_client_addr)
+			values[10] = client_addr;
+		else
+			nulls[10] = true;
+		values[11] = PointerGetDatum(cstring_to_text(item->client_hostname));
+		values[12] = PointerGetDatum(cstring_to_text(item->appname));
+
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
@@ -806,6 +1263,161 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 	}
 }
 
+PG_FUNCTION_INFO_V1(pg_wait_sampling_get_profile_extended);
+Datum
+pg_wait_sampling_get_profile_extended(PG_FUNCTION_ARGS)
+{
+	Profile    *profile;
+	FuncCallContext *funcctx;
+
+	check_shmem();
+
+	if (SRF_IS_FIRSTCALL())
+	{
+		MemoryContext oldcontext;
+		TupleDesc	tupdesc;
+
+		funcctx = SRF_FIRSTCALL_INIT();
+		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+		/* Receive profile from shmq */
+		profile = (Profile *) palloc0(sizeof(Profile));
+		profile->items = (ProfileItem *) receive_array(PROFILE_REQUEST,
+													   sizeof(ProfileItem), &profile->count);
+
+		funcctx->user_fctx = profile;
+		funcctx->max_calls = profile->count;
+
+		/* Make tuple descriptor */
+		tupdesc = CreateTemplateTupleDesc(14);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "role_id",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "database_id",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "parallel_leader_pid",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 8, "backend_type",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 9, "backend_state",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 10, "proc_start",
+						   TIMESTAMPTZOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 11, "client_addr",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 12, "client_hostname",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 13, "appname",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 14, "count",
+						   INT8OID, -1, 0);
+		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
+
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	/* stuff done on every call of the function */
+	funcctx = SRF_PERCALL_SETUP();
+
+	profile = (Profile *) funcctx->user_fctx;
+
+	if (funcctx->call_cntr < funcctx->max_calls)
+	{
+		/* for each row */
+		Datum		values[14];
+		bool		nulls[14];
+		HeapTuple	tuple;
+		ProfileItem *item;
+		const char *event_type,
+				   *event,
+				   *backend_type;
+		Datum		backend_state, proc_start, client_addr;
+		bool		is_null_be_state = false,
+					is_null_client_addr = false;
+
+		item = &profile->items[funcctx->call_cntr];
+
+		MemSet(values, 0, sizeof(values));
+		MemSet(nulls, 0, sizeof(nulls));
+
+		/* Make and return next tuple to caller */
+		event_type = pgstat_get_wait_event_type(item->wait_event_info);
+		event = pgstat_get_wait_event(item->wait_event_info);
+		backend_type = GetBackendTypeDesc(item->backend_type);
+		backend_state = GetBackendState(item->backend_state, &is_null_be_state);
+		proc_start = TimestampTzGetDatum(item->proc_start);
+		client_addr = get_backend_client_addr(item->client_addr, &is_null_client_addr);
+
+		values[0] = Int32GetDatum(item->pid);
+		if (event_type)
+			values[1] = PointerGetDatum(cstring_to_text(event_type));
+		else
+			nulls[1] = true;
+		if (event)
+			values[2] = PointerGetDatum(cstring_to_text(event));
+		else
+			nulls[2] = true;
+		if (pgws_profileQueries)
+			values[3] = UInt64GetDatum(item->queryId);
+		else
+			values[3] = (Datum) 0;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_ROLE_ID)
+			values[4] = ObjectIdGetDatum(item->role_id);
+		else
+			nulls[4] = true;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_DB_ID)
+			values[5] = ObjectIdGetDatum(item->database_id);
+		else
+			nulls[5] = true;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+			values[6] = Int32GetDatum(item->parallel_leader_pid);
+		else
+			nulls[6] = true;
+		if (backend_type && (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_TYPE))
+			values[7] = PointerGetDatum(cstring_to_text(backend_type));
+		else
+			nulls[7] = true;
+		if (!is_null_be_state && (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_STATE))
+			values[8] = backend_state;
+		else
+			nulls[8] = true;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_START_TIME)
+			values[9] = proc_start;
+		else
+			nulls[9] = true;
+		if (!is_null_client_addr && pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_ADDR)
+			values[10] = client_addr;
+		else
+			nulls[10] = true;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+			values[11] = PointerGetDatum(cstring_to_text(item->client_hostname));
+		else
+			nulls[11] = true;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_APPNAME)
+			values[12] = PointerGetDatum(cstring_to_text(item->appname));
+		else
+			nulls[12] = true;
+
+		values[13] = UInt64GetDatum(item->count);
+
+		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+
+		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+	}
+	else
+	{
+		/* nothing left */
+		SRF_RETURN_DONE(funcctx);
+	}
+}
+
 PG_FUNCTION_INFO_V1(pg_wait_sampling_reset_profile);
 Datum
 pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
@@ -914,6 +1526,159 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 			nulls[3] = true;
 
 		values[4] = UInt64GetDatum(item->queryId);
+		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+
+		history->index++;
+		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+	}
+	else
+	{
+		/* nothing left */
+		SRF_RETURN_DONE(funcctx);
+	}
+
+	PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history_extended);
+Datum
+pg_wait_sampling_get_history_extended(PG_FUNCTION_ARGS)
+{
+	History    *history;
+	FuncCallContext *funcctx;
+
+	check_shmem();
+
+	if (SRF_IS_FIRSTCALL())
+	{
+		MemoryContext oldcontext;
+		TupleDesc	tupdesc;
+
+		funcctx = SRF_FIRSTCALL_INIT();
+		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+		/* Receive history from shmq */
+		history = (History *) palloc0(sizeof(History));
+		history->items = (HistoryItem *) receive_array(HISTORY_REQUEST,
+													   sizeof(HistoryItem), &history->count);
+
+		funcctx->user_fctx = history;
+		funcctx->max_calls = history->count;
+
+		/* Make tuple descriptor */
+		tupdesc = CreateTemplateTupleDesc(14);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "sample_ts",
+						   TIMESTAMPTZOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "type",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "event",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "queryid",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "role_id",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "database_id",
+						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 8, "parallel_leader_pid",
+						   INT4OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 9, "backend_type",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 10, "backend_state",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 11, "proc_start",
+						   TIMESTAMPTZOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 12, "client_addr",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 13, "client_hostname",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 14, "appname",
+						   TEXTOID, -1, 0);
+		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
+
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	/* stuff done on every call of the function */
+	funcctx = SRF_PERCALL_SETUP();
+
+	history = (History *) funcctx->user_fctx;
+
+	if (history->index < history->count)
+	{
+		HeapTuple	tuple;
+		HistoryItem *item;
+		Datum		values[14];
+		bool		nulls[14];
+		const char *event_type,
+				   *event,
+				   *backend_type;
+		Datum		backend_state, proc_start, client_addr;
+		bool		is_null_be_state = false,
+					is_null_client_addr = false;
+
+		item = &history->items[history->index];
+
+		/* Make and return next tuple to caller */
+		MemSet(values, 0, sizeof(values));
+		MemSet(nulls, 0, sizeof(nulls));
+
+		event_type = pgstat_get_wait_event_type(item->wait_event_info);
+		event = pgstat_get_wait_event(item->wait_event_info);
+		backend_type = GetBackendTypeDesc(item->backend_type);
+		backend_state = GetBackendState(item->backend_state, &is_null_be_state);
+		proc_start = TimestampTzGetDatum(item->proc_start);
+		client_addr = get_backend_client_addr(item->client_addr, &is_null_client_addr);
+
+		values[0] = Int32GetDatum(item->pid);
+		values[1] = TimestampTzGetDatum(item->ts);
+		if (event_type)
+			values[2] = PointerGetDatum(cstring_to_text(event_type));
+		else
+			nulls[2] = true;
+		if (event)
+			values[3] = PointerGetDatum(cstring_to_text(event));
+		else
+			nulls[3] = true;
+		values[4] = UInt64GetDatum(item->queryId);
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_ROLE_ID)
+			values[5] = ObjectIdGetDatum(item->role_id);
+		else
+			nulls[5] = true;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_DB_ID)
+			values[6] = ObjectIdGetDatum(item->database_id);
+		else
+			nulls[6] = true;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+			values[7] = Int32GetDatum(item->parallel_leader_pid);
+		else
+			nulls[7] = true;
+		if (backend_type && (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_TYPE))
+			values[8] = PointerGetDatum(cstring_to_text(backend_type));
+		else
+			nulls[8] = true;
+		if (!is_null_be_state && (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_STATE))
+			values[9] = backend_state;
+		else
+			nulls[9] = true;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_START_TIME)
+			values[10] = proc_start;
+		else
+			nulls[10] = true;
+		if (!is_null_client_addr && pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_ADDR)
+			values[11] = client_addr;
+		else
+			nulls[11] = true;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+			values[12] = PointerGetDatum(cstring_to_text(item->client_hostname));
+		else
+			nulls[12] = true;
+		if (pgws_profile_dimensions & PGWS_DIMENSIONS_APPNAME)
+			values[13] = PointerGetDatum(cstring_to_text(item->appname));
+		else
+			nulls[13] = true;
+
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		history->index++;
