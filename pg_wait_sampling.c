@@ -995,9 +995,17 @@ pgws_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	if (pgws_enabled(nesting_level))
 		pgws_proc_queryids[i] = queryDesc->plannedstmt->queryId;
 	if (prev_ExecutorStart)
+#if PG_VERSION_NUM >= 180000
 		return prev_ExecutorStart(queryDesc, eflags);
+#else
+		prev_ExecutorStart(queryDesc, eflags);
+#endif
 	else
+#if PG_VERSION_NUM >= 180000
 		return standard_ExecutorStart(queryDesc, eflags);
+#else
+		standard_ExecutorStart(queryDesc, eflags);
+#endif
 }
 
 static void
