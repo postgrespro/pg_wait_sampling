@@ -30,9 +30,10 @@
 /* Values for sampling dimensions */
 #define PGWS_DIMENSIONS_NONE				0
 
-#define PGWS_DIMENSIONS_ROLE_ID				(1 << 1)
-#define PGWS_DIMENSIONS_DB_ID				(1 << 2)
-#define PGWS_DIMENSIONS_PARALLEL_LEADER_PID	(1 << 3)
+#define PGWS_DIMENSIONS_ROLE_ID				(1 << 0)
+#define PGWS_DIMENSIONS_DB_ID				(1 << 1)
+#define PGWS_DIMENSIONS_PARALLEL_LEADER_PID	(1 << 2)
+#define PGWS_DIMENSIONS_IS_REGULAR_BE		(1 << 3)
 #define PGWS_DIMENSIONS_BE_TYPE				(1 << 4)
 #define PGWS_DIMENSIONS_BE_STATE			(1 << 5)
 #define PGWS_DIMENSIONS_BE_START_TIME		(1 << 6)
@@ -44,41 +45,41 @@
 /* ^ all 1 in binary */
 
 /*
+ * Common data (sampling dimenstions) for ProfileItem and HistoryItem
+ */
+typedef struct
+{
+	/* Fields from PGPROC */
+	int			 pid;
+	uint32		 wait_event_info;
+	uint64		 queryId;
+	Oid			 role_id;
+	Oid			 database_id;
+	int			 parallel_leader_pid;
+	bool		 is_regular_backend;
+	/* Fields from BackendStatus */
+	BackendType	 backend_type;
+	BackendState backend_state;
+	TimestampTz	 proc_start;
+	SockAddr	 client_addr;
+	char		 client_hostname[NAMEDATALEN];
+	char		 appname[NAMEDATALEN];
+} SamplingDimensions;
+
+/*
  * Next two structures must match in fields until count/ts so make_profile_hash
  * works properly
  */
 typedef struct
 {
-	int			 pid;
-	uint32		 wait_event_info;
-	uint64		 queryId;
-	Oid			 role_id;
-	Oid			 database_id;
-	int			 parallel_leader_pid;
-	BackendType	 backend_type;
-	BackendState backend_state;
-	TimestampTz	 proc_start;
-	SockAddr	 client_addr;
-	char		 client_hostname[NAMEDATALEN];
-	char		 appname[NAMEDATALEN];
-	uint64		 count;
+	SamplingDimensions	dimensions;
+	uint64				count;
 } ProfileItem;
 
 typedef struct
 {
-	int			 pid;
-	uint32		 wait_event_info;
-	uint64		 queryId;
-	Oid			 role_id;
-	Oid			 database_id;
-	int			 parallel_leader_pid;
-	BackendType	 backend_type;
-	BackendState backend_state;
-	TimestampTz	 proc_start;
-	SockAddr	 client_addr;
-	char		 client_hostname[NAMEDATALEN];
-	char		 appname[NAMEDATALEN];
-	TimestampTz	 ts;
+	SamplingDimensions	dimensions;
+	TimestampTz			ts;
 } HistoryItem;
 
 typedef struct

@@ -149,6 +149,111 @@ get_next_observation(History *observations)
 	return result;
 }
 
+static void
+fill_dimensions(SamplingDimensions *dimensions, PGPROC *proc,
+				int pid, uint32 wait_event_info, uint64 queryId,
+				int dimensions_mask)
+{
+	Oid		role_id = proc->roleId;
+	Oid		database_id = proc->databaseId;
+	PGPROC *lockGroupLeader = proc->lockGroupLeader;
+	bool	is_regular_backend = proc->isRegularBackend;
+
+	dimensions->pid = pid;
+
+	dimensions->wait_event_info = wait_event_info;
+
+	if (pgws_profileQueries)
+		dimensions->queryId = queryId;
+
+	/* Copy everything we need from PGPROC */
+	if (dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
+		dimensions->role_id = role_id;
+
+	if (dimensions_mask & PGWS_DIMENSIONS_DB_ID)
+		dimensions->database_id = database_id;
+
+	if (dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+		dimensions->parallel_leader_pid = (lockGroupLeader ?
+										   lockGroupLeader->pid :
+										   0);
+
+	if (dimensions_mask & PGWS_DIMENSIONS_IS_REGULAR_BE)
+		dimensions->is_regular_backend = is_regular_backend;
+
+	/* Look into BackendStatus only if necessary */
+	if (check_bestatus_dimensions(dimensions_mask))
+	{
+#if PG_VERSION_NUM >= 170000
+		PgBackendStatus	*bestatus = pgstat_get_beentry_by_proc_number(GetNumberFromPGProc(proc));
+#else
+		PgBackendStatus	*bestatus = get_beentry_by_procpid(proc->pid);
+#endif
+		/* Copy everything we need from BackendStatus */
+		if (bestatus)
+		{
+			if (dimensions_mask & PGWS_DIMENSIONS_BE_TYPE)
+				dimensions->backend_type = bestatus->st_backendType;
+
+			if (dimensions_mask & PGWS_DIMENSIONS_BE_STATE)
+				dimensions->backend_state = bestatus->st_state;
+
+			if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
+				dimensions->proc_start = bestatus->st_proc_start_timestamp;
+
+			if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR)
+				dimensions->client_addr = bestatus->st_clientaddr;
+
+			if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+				strcpy(dimensions->client_hostname, bestatus->st_clienthostname);
+
+			if (dimensions_mask & PGWS_DIMENSIONS_APPNAME)
+				strcpy(dimensions->appname, bestatus->st_appname);
+		}
+	}
+}
+
+static void
+copy_dimensions (SamplingDimensions *dst, SamplingDimensions *src,
+				 int dst_dimensions_mask)
+{
+	dst->pid = src->pid;
+
+	dst->wait_event_info = src->wait_event_info;
+
+	dst->queryId = src->queryId;
+
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
+		dst->role_id = src->role_id;
+
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_DB_ID)
+		dst->database_id = src->database_id;
+
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+		dst->parallel_leader_pid = src->parallel_leader_pid;
+
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_IS_REGULAR_BE)
+		dst->is_regular_backend = src->is_regular_backend;
+
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_BE_TYPE)
+		dst->backend_type = src->backend_type;
+
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_BE_STATE)
+		dst->backend_state = src->backend_state;
+
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
+		dst->proc_start = src->proc_start;
+
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR)
+		dst->client_addr = src->client_addr;
+
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+		strcpy(dst->client_hostname, src->client_hostname);
+
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_APPNAME)
+		strcpy(dst->appname, src->appname);
+}
+
 /*
  * Read current waits from backends and write them to history array
  * and/or profile hash.
@@ -176,91 +281,33 @@ probe_waits(History *observations, HTAB *profile_hash,
 		PGPROC	   *proc = &ProcGlobal->allProcs[i];
 		int 		pid;
 		uint32		wait_event_info;
+		SamplingDimensions common_dimensions;
+		int			dimensions_mask_common = pgws_history_dimensions |
+											 pgws_profile_dimensions;
 
 		/* Check if we need to sample this process */
 		if (!pgws_should_sample_proc(proc, &pid, &wait_event_info))
 			continue;
 
-		/* We zero whole HistoryItem to avoid doing it field-by-field */
+		/*
+		 * We zero items and dimensions with memset
+		 * to avoid doing it field-by-field
+		 */
 		memset(&item_history, 0, sizeof(HistoryItem));
 		memset(&item_profile, 0, sizeof(ProfileItem));
+		memset(&common_dimensions, 0, sizeof(SamplingDimensions));
 
-		item_history.pid = pid;
-		item_profile.pid = pid;
+		fill_dimensions(&common_dimensions, proc, pid, wait_event_info,
+						pgws_proc_queryids[i], dimensions_mask_common);
 
-		item_history.wait_event_info = wait_event_info;
-		item_profile.wait_event_info = wait_event_info;
-
-		if (pgws_profileQueries)
-		{
-			item_history.queryId = pgws_proc_queryids[i];
-			item_profile.queryId = pgws_proc_queryids[i];
-		}
+		copy_dimensions(&item_history.dimensions,
+						&common_dimensions,
+						pgws_history_dimensions);
+		copy_dimensions(&item_history.dimensions,
+						&common_dimensions,
+						pgws_profile_dimensions);
 
 		item_history.ts = ts;
-
-		/* Copy everything we need from PGPROC */
-		if (pgws_history_dimensions & PGWS_DIMENSIONS_ROLE_ID)
-			item_history.role_id = proc->roleId;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_ROLE_ID)
-			item_profile.role_id = proc->roleId;
-
-		if (pgws_history_dimensions & PGWS_DIMENSIONS_DB_ID)
-			item_history.database_id = proc->databaseId;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_DB_ID)
-			item_profile.database_id = proc->databaseId;
-
-		if (pgws_history_dimensions & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
-			item_history.parallel_leader_pid = (proc->lockGroupLeader ?
-												proc->lockGroupLeader->pid :
-												0);
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
-			item_profile.parallel_leader_pid = (proc->lockGroupLeader ?
-												proc->lockGroupLeader->pid :
-												0);
-		/* Look into BackendStatus only if necessary */
-		if (check_bestatus_dimensions(pgws_history_dimensions) ||
-			check_bestatus_dimensions(pgws_profile_dimensions))
-		{
-#if PG_VERSION_NUM >= 170000
-			PgBackendStatus	*bestatus = pgstat_get_beentry_by_proc_number(GetNumberFromPGProc(proc));
-#else
-			PgBackendStatus	*bestatus = get_beentry_by_procpid(proc->pid);
-#endif
-			/* Copy everything we need from BackendStatus */
-			if (bestatus)
-			{
-				if (pgws_history_dimensions & PGWS_DIMENSIONS_BE_TYPE)
-					item_history.backend_type = bestatus->st_backendType;
-				if (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_TYPE)
-					item_profile.backend_type = bestatus->st_backendType;
-
-				if (pgws_history_dimensions & PGWS_DIMENSIONS_BE_STATE)
-					item_history.backend_state = bestatus->st_state;
-				if (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_STATE)
-					item_profile.backend_state = bestatus->st_state;
-
-				if (pgws_history_dimensions & PGWS_DIMENSIONS_BE_START_TIME)
-					item_history.proc_start = bestatus->st_proc_start_timestamp;
-				if (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_START_TIME)
-					item_profile.proc_start = bestatus->st_proc_start_timestamp;
-
-				if (pgws_history_dimensions & PGWS_DIMENSIONS_CLIENT_ADDR)
-					item_history.client_addr = bestatus->st_clientaddr;
-				if (pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_ADDR)
-					item_profile.client_addr = bestatus->st_clientaddr;
-
-				if (pgws_history_dimensions & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
-					strcpy(item_history.client_hostname, bestatus->st_clienthostname);
-				if (pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
-					strcpy(item_profile.client_hostname, bestatus->st_clienthostname);
-
-				if (pgws_history_dimensions & PGWS_DIMENSIONS_APPNAME)
-					strcpy(item_history.appname, bestatus->st_appname);
-				if (pgws_profile_dimensions & PGWS_DIMENSIONS_APPNAME)
-					strcpy(item_profile.appname, bestatus->st_appname);
-			}
-		}
 
 		/* Write to the history if needed */
 		if (write_history)
@@ -276,9 +323,10 @@ probe_waits(History *observations, HTAB *profile_hash,
 			bool		found;
 
 			if (!profile_pid)
-				item_profile.pid = 0;
+				item_profile.dimensions.pid = 0;
 
-			profileItem = (ProfileItem *) hash_search(profile_hash, &item_profile, HASH_ENTER, &found);
+			profileItem = (ProfileItem *) hash_search(profile_hash, &item_profile,
+													  HASH_ENTER, &found);
 			if (found)
 				profileItem->count++;
 			else
@@ -379,11 +427,11 @@ make_profile_hash()
 	HASHCTL		hash_ctl;
 
 	/*
-	 * Since adding additional dimensions we include everyting except count
-	 * into hashtable key. This is fine for cases when some fields are 0 since
+	 * Since adding additional dimensions we use SamplingDimensions as
+	 * hashtable key. This is fine for cases when some fields are 0 since
 	 * it doesn't impede our ability to search the hash table for entries
 	 */
-	hash_ctl.keysize = offsetof(ProfileItem, count);
+	hash_ctl.keysize = sizeof(SamplingDimensions);
 
 	hash_ctl.entrysize = sizeof(ProfileItem);
 	return hash_create("Waits profile hash", 1024, &hash_ctl,
