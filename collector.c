@@ -149,7 +149,7 @@ get_next_observation(History *observations)
 	return result;
 }
 
-static void
+void
 fill_dimensions(SamplingDimensions *dimensions, PGPROC *proc,
 				int pid, uint32 wait_event_info, uint64 queryId,
 				int dimensions_mask)

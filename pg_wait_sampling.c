@@ -853,6 +853,114 @@ get_beentry_by_procpid(int pid)
 	return NULL;
 }
 
+/*
+ * Common routine to fill "dimensions" part of tupdesc
+ */
+static void
+fill_tuple_desc (TupleDesc tupdesc)
+{
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
+					   INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 5, "role_id",
+					   INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 6, "database_id",
+					   INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 7, "parallel_leader_pid",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 8, "is_regular_backend",
+					   BOOLOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 9, "backend_type",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 10, "backend_state",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 11, "proc_start",
+					   TIMESTAMPTZOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 12, "client_addr",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 13, "client_hostname",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 14, "appname",
+					   TEXTOID, -1, 0);
+}
+
+static void
+fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions, bool skip_mask)
+{
+	const char *event_type,
+			   *event,
+			   *backend_type;
+	Datum		backend_state, proc_start, client_addr;
+	bool		is_null_be_state = false,
+				is_null_client_addr = false;
+
+	event_type = pgstat_get_wait_event_type(dimensions.wait_event_info);
+	event = pgstat_get_wait_event(dimensions.wait_event_info);
+	backend_type = GetBackendTypeDesc(dimensions.backend_type);
+	backend_state = GetBackendState(dimensions.backend_state, &is_null_be_state);
+	proc_start = TimestampTzGetDatum(dimensions.proc_start);
+	client_addr = get_backend_client_addr(dimensions.client_addr, &is_null_client_addr);
+
+	values[0] = Int32GetDatum(dimensions.pid);
+	if (event_type)
+		values[1] = PointerGetDatum(cstring_to_text(event_type));
+	else
+		nulls[1] = true;
+	if (event)
+		values[2] = PointerGetDatum(cstring_to_text(event));
+	else
+		nulls[2] = true;
+	if (pgws_profileQueries || skip_mask)
+		values[3] = UInt64GetDatum(dimensions.queryId);
+	else
+		values[3] = (Datum) 0;
+	if ((pgws_profile_dimensions & PGWS_DIMENSIONS_ROLE_ID) || skip_mask)
+		values[4] = ObjectIdGetDatum(dimensions.role_id);
+	else
+		nulls[4] = true;
+	if (pgws_profile_dimensions & PGWS_DIMENSIONS_DB_ID || skip_mask)
+		values[5] = ObjectIdGetDatum(dimensions.database_id);
+	else
+		nulls[5] = true;
+	if (pgws_profile_dimensions & PGWS_DIMENSIONS_PARALLEL_LEADER_PID || skip_mask)
+		values[6] = Int32GetDatum(dimensions.parallel_leader_pid);
+	else
+		nulls[6] = true;
+	if (pgws_profile_dimensions & PGWS_DIMENSIONS_IS_REGULAR_BE || skip_mask)
+		values[7] = BoolGetDatum(dimensions.is_regular_backend);
+	else
+		nulls[7] = true;
+	if (backend_type && ((pgws_profile_dimensions & PGWS_DIMENSIONS_BE_TYPE) || skip_mask))
+		values[8] = PointerGetDatum(cstring_to_text(backend_type));
+	else
+		nulls[8] = true;
+	if (!is_null_be_state && ((pgws_profile_dimensions & PGWS_DIMENSIONS_BE_STATE) || skip_mask))
+		values[9] = backend_state;
+	else
+		nulls[9] = true;
+	if ((pgws_profile_dimensions & PGWS_DIMENSIONS_BE_START_TIME) || skip_mask)
+		values[10] = proc_start;
+	else
+		nulls[10] = true;
+	if (!is_null_client_addr && ((pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_ADDR) || skip_mask))
+		values[11] = client_addr;
+	else
+		nulls[11] = true;
+	if ((pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_HOSTNAME) || skip_mask)
+		values[12] = PointerGetDatum(cstring_to_text(dimensions.client_hostname));
+	else
+		nulls[12] = true;
+	if ((pgws_profile_dimensions & PGWS_DIMENSIONS_APPNAME) || skip_mask)
+		values[13] = PointerGetDatum(cstring_to_text(dimensions.appname));
+	else
+		nulls[13] = true;
+}
+
 PG_FUNCTION_INFO_V1(pg_wait_sampling_get_current_extended);
 Datum
 pg_wait_sampling_get_current_extended(PG_FUNCTION_ARGS)
@@ -877,35 +985,7 @@ pg_wait_sampling_get_current_extended(PG_FUNCTION_ARGS)
 		funcctx->user_fctx = params;
 		/* Setup tuple desc */
 		tupdesc = CreateTemplateTupleDesc(14);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "role_id",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "database_id",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "parallel_leader_pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 8, "is_regular_backend",
-						   BOOLOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 9, "backend_type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 10, "backend_state",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 11, "proc_start",
-						   TIMESTAMPTZOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 12, "client_addr",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 13, "client_hostname",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 14, "appname",
-						   TEXTOID, -1, 0);
-
+		fill_tuple_desc (tupdesc);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
 		LWLockAcquire(ProcArrayLock, LW_SHARED);
@@ -951,25 +1031,6 @@ pg_wait_sampling_get_current_extended(PG_FUNCTION_ARGS)
 								pgws_proc_queryids[proc - ProcGlobal->allProcs],
 								PGWS_DIMENSIONS_ALL);
 
-//				/* Show all fields without looking at GUC variables */
-//				params->items[j].dimensions.pid = proc.pid;
-//				params->items[j].dimensions.wait_event_info = proc.wait_event_info;
-//				params->items[j].dimensions.queryId = pgws_proc_queryids[i];
-//				params->items[j].dimensions.role_id = proc.roleId;
-//				params->items[j].dimensions.database_id = proc.databaseId;
-//				params->items[j].dimensions.parallel_leader_pid = (proc.lockGroupLeader ?
-//																   proc.lockGroupLeader->pid :
-//																   0);
-//				params->items[j].dimensions.is_regular_backend = proc.isRegularBackend;
-//				if (bestatus)
-//				{
-//					params->items[j].dimensions.backend_type = bestatus->st_backendType;
-//					params->items[j].dimensions.backend_state = bestatus->st_state;
-//					params->items[j].dimensions.proc_start = bestatus->st_proc_start_timestamp;
-//					params->items[j].dimensions.client_addr = bestatus->st_clientaddr;
-//					strcpy(params->items[j].dimensions.client_hostname, bestatus->st_clienthostname);
-//					strcpy(params->items[j].dimensions.appname, bestatus->st_appname);
-//				}
 				j++;
 			}
 			funcctx->max_calls = j;
@@ -994,12 +1055,6 @@ pg_wait_sampling_get_current_extended(PG_FUNCTION_ARGS)
 		HeapTuple	tuple;
 		Datum		values[14];
 		bool		nulls[14];
-		const char *event_type,
-				   *event,
-				   *backend_type;
-		Datum		backend_state, proc_start, client_addr;
-		bool		is_null_be_state = false,
-					is_null_client_addr = false;
 		HistoryItem *item;
 
 		item = &params->items[funcctx->call_cntr];
@@ -1008,42 +1063,7 @@ pg_wait_sampling_get_current_extended(PG_FUNCTION_ARGS)
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		event_type = pgstat_get_wait_event_type(item->dimensions.wait_event_info);
-		event = pgstat_get_wait_event(item->dimensions.wait_event_info);
-		backend_type = GetBackendTypeDesc(item->dimensions.backend_type);
-		backend_state = GetBackendState(item->dimensions.backend_state, &is_null_be_state);
-		proc_start = TimestampTzGetDatum(item->dimensions.proc_start);
-		client_addr = get_backend_client_addr(item->dimensions.client_addr, &is_null_client_addr);
-
-		values[0] = Int32GetDatum(item->dimensions.pid);
-		if (event_type)
-			values[1] = PointerGetDatum(cstring_to_text(event_type));
-		else
-			nulls[1] = true;
-		if (event)
-			values[2] = PointerGetDatum(cstring_to_text(event));
-		else
-			nulls[2] = true;
-		values[3] = UInt64GetDatum(item->dimensions.queryId);
-		values[4] = ObjectIdGetDatum(item->dimensions.role_id);
-		values[5] = ObjectIdGetDatum(item->dimensions.database_id);
-		values[6] = Int32GetDatum(item->dimensions.parallel_leader_pid);
-		values[7] = BoolGetDatum(item->dimensions.is_regular_backend);
-		if (backend_type)
-			values[7] = PointerGetDatum(cstring_to_text(backend_type));
-		else
-			nulls[7] = true;
-		if (!is_null_be_state)
-			values[8] = backend_state;
-		else
-			nulls[8] = true;
-		values[9] = proc_start;
-		if (!is_null_client_addr)
-			values[10] = client_addr;
-		else
-			nulls[10] = true;
-		values[11] = PointerGetDatum(cstring_to_text(item->dimensions.client_hostname));
-		values[12] = PointerGetDatum(cstring_to_text(item->dimensions.appname));
+		fill_values_and_nulls(values, nulls, item->dimensions, true);
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
@@ -1280,34 +1300,7 @@ pg_wait_sampling_get_profile_extended(PG_FUNCTION_ARGS)
 
 		/* Make tuple descriptor */
 		tupdesc = CreateTemplateTupleDesc(15);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "role_id",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "database_id",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "parallel_leader_pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 8, "is_regular_backend",
-						   BOOLOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 9, "backend_type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 10, "backend_state",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 11, "proc_start",
-						   TIMESTAMPTZOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 12, "client_addr",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 13, "client_hostname",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 14, "appname",
-						   TEXTOID, -1, 0);
+		fill_tuple_desc (tupdesc);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 15, "count",
 						   INT8OID, -1, 0);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
@@ -1327,82 +1320,16 @@ pg_wait_sampling_get_profile_extended(PG_FUNCTION_ARGS)
 		bool		nulls[15];
 		HeapTuple	tuple;
 		ProfileItem *item;
-		const char *event_type,
-				   *event,
-				   *backend_type;
-		Datum		backend_state, proc_start, client_addr;
-		bool		is_null_be_state = false,
-					is_null_client_addr = false;
 
 		item = &profile->items[funcctx->call_cntr];
 
+		/* Make and return next tuple to caller */
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		/* Make and return next tuple to caller */
-		event_type = pgstat_get_wait_event_type(item->dimensions.wait_event_info);
-		event = pgstat_get_wait_event(item->dimensions.wait_event_info);
-		backend_type = GetBackendTypeDesc(item->dimensions.backend_type);
-		backend_state = GetBackendState(item->dimensions.backend_state, &is_null_be_state);
-		proc_start = TimestampTzGetDatum(item->dimensions.proc_start);
-		client_addr = get_backend_client_addr(item->dimensions.client_addr, &is_null_client_addr);
-
-		values[0] = Int32GetDatum(item->dimensions.pid);
-		if (event_type)
-			values[1] = PointerGetDatum(cstring_to_text(event_type));
-		else
-			nulls[1] = true;
-		if (event)
-			values[2] = PointerGetDatum(cstring_to_text(event));
-		else
-			nulls[2] = true;
-		if (pgws_profileQueries)
-			values[3] = UInt64GetDatum(item->dimensions.queryId);
-		else
-			values[3] = (Datum) 0;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_ROLE_ID)
-			values[4] = ObjectIdGetDatum(item->dimensions.role_id);
-		else
-			nulls[4] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_DB_ID)
-			values[5] = ObjectIdGetDatum(item->dimensions.database_id);
-		else
-			nulls[5] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
-			values[6] = Int32GetDatum(item->dimensions.parallel_leader_pid);
-		else
-			nulls[6] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_IS_REGULAR_BE)
-			values[7] = BoolGetDatum(item->dimensions.is_regular_backend);
-		else
-			nulls[7] = true;
-		if (backend_type && (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_TYPE))
-			values[8] = PointerGetDatum(cstring_to_text(backend_type));
-		else
-			nulls[8] = true;
-		if (!is_null_be_state && (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_STATE))
-			values[9] = backend_state;
-		else
-			nulls[9] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_START_TIME)
-			values[10] = proc_start;
-		else
-			nulls[10] = true;
-		if (!is_null_client_addr && pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_ADDR)
-			values[11] = client_addr;
-		else
-			nulls[11] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
-			values[12] = PointerGetDatum(cstring_to_text(item->dimensions.client_hostname));
-		else
-			nulls[12] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_APPNAME)
-			values[13] = PointerGetDatum(cstring_to_text(item->dimensions.appname));
-		else
-			nulls[13] = true;
-
+		fill_values_and_nulls(values, nulls, item->dimensions, false);
 		values[14] = UInt64GetDatum(item->count);
-
+	
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
@@ -1563,36 +1490,9 @@ pg_wait_sampling_get_history_extended(PG_FUNCTION_ARGS)
 
 		/* Make tuple descriptor */
 		tupdesc = CreateTemplateTupleDesc(15);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "sample_ts",
+		fill_tuple_desc (tupdesc);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 15, "sample_ts", //TODO we have moved this to the end to have it more in line with current and profile; debatable; maybe move it to first place?
 						   TIMESTAMPTZOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "event",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "queryid",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "role_id",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "database_id",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 8, "parallel_leader_pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 9, "is_regular_backend",
-						   BOOLOID, -1, 0);		
-		TupleDescInitEntry(tupdesc, (AttrNumber) 10, "backend_type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 11, "backend_state",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 12, "proc_start",
-						   TIMESTAMPTZOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 13, "client_addr",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 14, "client_hostname",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 15, "appname",
-						   TEXTOID, -1, 0);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
 		MemoryContextSwitchTo(oldcontext);
@@ -1607,14 +1507,8 @@ pg_wait_sampling_get_history_extended(PG_FUNCTION_ARGS)
 	{
 		HeapTuple	tuple;
 		HistoryItem *item;
-		Datum		values[14];
-		bool		nulls[14];
-		const char *event_type,
-				   *event,
-				   *backend_type;
-		Datum		backend_state, proc_start, client_addr;
-		bool		is_null_be_state = false,
-					is_null_client_addr = false;
+		Datum		values[15];
+		bool		nulls[15];
 
 		item = &history->items[history->index];
 
@@ -1622,64 +1516,8 @@ pg_wait_sampling_get_history_extended(PG_FUNCTION_ARGS)
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		event_type = pgstat_get_wait_event_type(item->dimensions.wait_event_info);
-		event = pgstat_get_wait_event(item->dimensions.wait_event_info);
-		backend_type = GetBackendTypeDesc(item->dimensions.backend_type);
-		backend_state = GetBackendState(item->dimensions.backend_state, &is_null_be_state);
-		proc_start = TimestampTzGetDatum(item->dimensions.proc_start);
-		client_addr = get_backend_client_addr(item->dimensions.client_addr, &is_null_client_addr);
-
-		values[0] = Int32GetDatum(item->dimensions.pid);
-		values[1] = TimestampTzGetDatum(item->ts);
-		if (event_type)
-			values[2] = PointerGetDatum(cstring_to_text(event_type));
-		else
-			nulls[2] = true;
-		if (event)
-			values[3] = PointerGetDatum(cstring_to_text(event));
-		else
-			nulls[3] = true;
-		values[4] = UInt64GetDatum(item->dimensions.queryId);
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_ROLE_ID)
-			values[5] = ObjectIdGetDatum(item->dimensions.role_id);
-		else
-			nulls[5] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_DB_ID)
-			values[6] = ObjectIdGetDatum(item->dimensions.database_id);
-		else
-			nulls[6] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
-			values[7] = Int32GetDatum(item->dimensions.parallel_leader_pid);
-		else
-			nulls[7] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_IS_REGULAR_BE)
-			values[8] = BoolGetDatum(item->dimensions.is_regular_backend);
-		else
-			nulls[8] = true;
-		if (backend_type && (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_TYPE))
-			values[9] = PointerGetDatum(cstring_to_text(backend_type));
-		else
-			nulls[9] = true;
-		if (!is_null_be_state && (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_STATE))
-			values[10] = backend_state;
-		else
-			nulls[10] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_BE_START_TIME)
-			values[11] = proc_start;
-		else
-			nulls[11] = true;
-		if (!is_null_client_addr && pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_ADDR)
-			values[12] = client_addr;
-		else
-			nulls[12] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
-			values[13] = PointerGetDatum(cstring_to_text(item->dimensions.client_hostname));
-		else
-			nulls[13] = true;
-		if (pgws_profile_dimensions & PGWS_DIMENSIONS_APPNAME)
-			values[14] = PointerGetDatum(cstring_to_text(item->dimensions.appname));
-		else
-			nulls[14] = true;
+		fill_values_and_nulls(values, nulls, item->dimensions, false);
+		values[14] = TimestampTzGetDatum(item->ts); //TODO!!!!!!!!!!!
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 

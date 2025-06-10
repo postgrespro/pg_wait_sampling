@@ -123,6 +123,9 @@ extern int pgws_profile_dimensions; /* bit mask that is derived from GUC */
 extern PgBackendStatus* get_beentry_by_procpid(int pid);
 
 /* collector.c */
+extern void fill_dimensions(SamplingDimensions *dimensions, PGPROC *proc,
+							int pid, uint32 wait_event_info, uint64 queryId,
+							int dimensions_mask)
 extern void pgws_register_wait_collector(void);
 extern PGDLLEXPORT void pgws_collector_main(Datum main_arg);
 
