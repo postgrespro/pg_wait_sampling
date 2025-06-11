@@ -346,7 +346,15 @@ pgws_general_dimensions_check_hook (char **newvalue, void **extra, GucSource sou
 			char	   *tok = (char *) lfirst(l);
 
 			/* Process all allowed values */
-			if (pg_strcasecmp(tok, "role_id") == 0)
+			if (pg_strcasecmp(tok, "pid") == 0)
+				extrachecks |= PGWS_DIMENSIONS_PID;
+			else if (pg_strcasecmp(tok, "wait_event_type") == 0)
+				extrachecks |= PGWS_DIMENSIONS_WAIT_EVENT_TYPE;
+			else if (pg_strcasecmp(tok, "wait_event") == 0)
+				extrachecks |= PGWS_DIMENSIONS_WAIT_EVENT;
+			else if (pg_strcasecmp(tok, "query_id") == 0)
+				extrachecks |= PGWD_DIMENSIONS_QUERY_ID;
+			else if (pg_strcasecmp(tok, "role_id") == 0)
 				extrachecks |= PGWS_DIMENSIONS_ROLE_ID;
 			else if (pg_strcasecmp(tok, "database_id") == 0)
 				extrachecks |= PGWS_DIMENSIONS_DB_ID;
@@ -536,7 +544,7 @@ _PG_init(void)
 							   "Sets sampling dimensions for history",
 							   NULL,
 							   &pgws_history_dimensions_string,
-							   "none",
+							   "pid, wait_event_type, wait_event, query_id",
 							   PGC_SIGHUP,
 							   GUC_LIST_INPUT,
 							   pgws_general_dimensions_check_hook,
@@ -547,7 +555,7 @@ _PG_init(void)
 							   "Sets sampling dimensions for profile",
 							   NULL,
 							   &pgws_profile_dimensions_string,
-							   "none",
+							   "pid, wait_event_type, wait_event, query_id",
 							   PGC_SIGHUP,
 							   GUC_LIST_INPUT,
 							   pgws_general_dimensions_check_hook,
@@ -620,127 +628,127 @@ typedef struct
 	TimestampTz ts;
 } WaitCurrentContext;
 
-PG_FUNCTION_INFO_V1(pg_wait_sampling_get_current);
-Datum
-pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
-{
-	FuncCallContext *funcctx;
-	WaitCurrentContext *params;
-
-	check_shmem();
-
-	if (SRF_IS_FIRSTCALL())
-	{
-		MemoryContext oldcontext;
-		TupleDesc	tupdesc;
-
-		funcctx = SRF_FIRSTCALL_INIT();
-
-		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
-		params = (WaitCurrentContext *) palloc0(sizeof(WaitCurrentContext));
-		params->ts = GetCurrentTimestamp();
-
-		funcctx->user_fctx = params;
-		tupdesc = CreateTemplateTupleDesc(4);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
-						   INT8OID, -1, 0);
-
-		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
-
-		LWLockAcquire(ProcArrayLock, LW_SHARED);
-
-		if (!PG_ARGISNULL(0))
-		{
-			/* pg_wait_sampling_get_current(pid int4) function */
-			HistoryItem *item;
-			PGPROC	   *proc;
-
-			proc = search_proc(PG_GETARG_UINT32(0));
-			params->items = (HistoryItem *) palloc0(sizeof(HistoryItem));
-			item = &params->items[0];
-			item->dimensions.pid = proc->pid;
-			item->dimensions.wait_event_info = proc->wait_event_info;
-			item->dimensions.queryId = pgws_proc_queryids[proc - ProcGlobal->allProcs];
-			funcctx->max_calls = 1;
-		}
-		else
-		{
-			/* pg_wait_sampling_current view */
-			int			procCount = ProcGlobal->allProcCount,
-						i,
-						j = 0;
-
-			params->items = (HistoryItem *) palloc0(sizeof(HistoryItem) * procCount);
-			for (i = 0; i < procCount; i++)
-			{
-				PGPROC	   *proc = &ProcGlobal->allProcs[i];
-
-				if (!pgws_should_sample_proc(proc,
-											 &params->items[j].dimensions.pid,
-											 &params->items[j].dimensions.wait_event_info))
-					continue;
-
-				params->items[j].dimensions.pid = proc->pid;
-				params->items[j].dimensions.wait_event_info = proc->wait_event_info;
-				params->items[j].dimensions.queryId = pgws_proc_queryids[i];
-				j++;
-			}
-			funcctx->max_calls = j;
-		}
-
-		LWLockRelease(ProcArrayLock);
-
-		MemoryContextSwitchTo(oldcontext);
-	}
-
-	/* stuff done on every call of the function */
-	funcctx = SRF_PERCALL_SETUP();
-	params = (WaitCurrentContext *) funcctx->user_fctx;
-
-	if (funcctx->call_cntr < funcctx->max_calls)
-	{
-		HeapTuple	tuple;
-		Datum		values[4];
-		bool		nulls[4];
-		const char *event_type,
-				   *event;
-		HistoryItem *item;
-
-		item = &params->items[funcctx->call_cntr];
-
-		/* Make and return next tuple to caller */
-		MemSet(values, 0, sizeof(values));
-		MemSet(nulls, 0, sizeof(nulls));
-
-		event_type = pgstat_get_wait_event_type(item->dimensions.wait_event_info);
-		event = pgstat_get_wait_event(item->dimensions.wait_event_info);
-		values[0] = Int32GetDatum(item->dimensions.pid);
-		if (event_type)
-			values[1] = PointerGetDatum(cstring_to_text(event_type));
-		else
-			nulls[1] = true;
-		if (event)
-			values[2] = PointerGetDatum(cstring_to_text(event));
-		else
-			nulls[2] = true;
-
-		values[3] = UInt64GetDatum(item->dimensions.queryId);
-		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
-
-		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
-	}
-	else
-	{
-		/* nothing left */
-		SRF_RETURN_DONE(funcctx);
-	}
-}
+//PG_FUNCTION_INFO_V1(pg_wait_sampling_get_current);
+//Datum
+//pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
+//{
+//	FuncCallContext *funcctx;
+//	WaitCurrentContext *params;
+//
+//	check_shmem();
+//
+//	if (SRF_IS_FIRSTCALL())
+//	{
+//		MemoryContext oldcontext;
+//		TupleDesc	tupdesc;
+//
+//		funcctx = SRF_FIRSTCALL_INIT();
+//
+//		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+//		params = (WaitCurrentContext *) palloc0(sizeof(WaitCurrentContext));
+//		params->ts = GetCurrentTimestamp();
+//
+//		funcctx->user_fctx = params;
+//		tupdesc = CreateTemplateTupleDesc(4);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
+//						   INT4OID, -1, 0);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
+//						   TEXTOID, -1, 0);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
+//						   TEXTOID, -1, 0);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
+//						   INT8OID, -1, 0);
+//
+//		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
+//
+//		LWLockAcquire(ProcArrayLock, LW_SHARED);
+//
+//		if (!PG_ARGISNULL(0))
+//		{
+//			/* pg_wait_sampling_get_current(pid int4) function */
+//			HistoryItem *item;
+//			PGPROC	   *proc;
+//
+//			proc = search_proc(PG_GETARG_UINT32(0));
+//			params->items = (HistoryItem *) palloc0(sizeof(HistoryItem));
+//			item = &params->items[0];
+//			item->dimensions.pid = proc->pid;
+//			item->dimensions.wait_event_info = proc->wait_event_info;
+//			item->dimensions.queryId = pgws_proc_queryids[proc - ProcGlobal->allProcs];
+//			funcctx->max_calls = 1;
+//		}
+//		else
+//		{
+//			/* pg_wait_sampling_current view */
+//			int			procCount = ProcGlobal->allProcCount,
+//						i,
+//						j = 0;
+//
+//			params->items = (HistoryItem *) palloc0(sizeof(HistoryItem) * procCount);
+//			for (i = 0; i < procCount; i++)
+//			{
+//				PGPROC	   *proc = &ProcGlobal->allProcs[i];
+//
+//				if (!pgws_should_sample_proc(proc,
+//											 &params->items[j].dimensions.pid,
+//											 &params->items[j].dimensions.wait_event_info))
+//					continue;
+//
+//				params->items[j].dimensions.pid = proc->pid;
+//				params->items[j].dimensions.wait_event_info = proc->wait_event_info;
+//				params->items[j].dimensions.queryId = pgws_proc_queryids[i];
+//				j++;
+//			}
+//			funcctx->max_calls = j;
+//		}
+//
+//		LWLockRelease(ProcArrayLock);
+//
+//		MemoryContextSwitchTo(oldcontext);
+//	}
+//
+//	/* stuff done on every call of the function */
+//	funcctx = SRF_PERCALL_SETUP();
+//	params = (WaitCurrentContext *) funcctx->user_fctx;
+//
+//	if (funcctx->call_cntr < funcctx->max_calls)
+//	{
+//		HeapTuple	tuple;
+//		Datum		values[4];
+//		bool		nulls[4];
+//		const char *event_type,
+//				   *event;
+//		HistoryItem *item;
+//
+//		item = &params->items[funcctx->call_cntr];
+//
+//		/* Make and return next tuple to caller */
+//		MemSet(values, 0, sizeof(values));
+//		MemSet(nulls, 0, sizeof(nulls));
+//
+//		event_type = pgstat_get_wait_event_type(item->dimensions.wait_event_info);
+//		event = pgstat_get_wait_event(item->dimensions.wait_event_info);
+//		values[0] = Int32GetDatum(item->dimensions.pid);
+//		if (event_type)
+//			values[1] = PointerGetDatum(cstring_to_text(event_type));
+//		else
+//			nulls[1] = true;
+//		if (event)
+//			values[2] = PointerGetDatum(cstring_to_text(event));
+//		else
+//			nulls[2] = true;
+//
+//		values[3] = UInt64GetDatum(item->dimensions.queryId);
+//		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+//
+//		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+//	}
+//	else
+//	{
+//		/* nothing left */
+//		SRF_RETURN_DONE(funcctx);
+//	}
+//}
 
 static Datum
 GetBackendState(BackendState state, bool *is_null)
@@ -847,8 +855,8 @@ get_beentry_by_procpid(int pid)
 		/* Here beid is just index in localBackendStatusTable */
 		local_beentry = pgstat_fetch_stat_local_beentry(cur_be_idx);
 #endif
-		if (local_beentry->backendStatus.st_procpid == pid)
-			return &local_beentry->backendStatus;
+		if (local_beentry->backendStatus->st_procpid == pid)
+			return local_beentry->backendStatus;
 	}
 	return NULL;
 }
@@ -890,7 +898,7 @@ fill_tuple_desc (TupleDesc tupdesc)
 }
 
 static void
-fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions, bool skip_mask)
+fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions, int dimensions_mask)
 {
 	const char *event_type,
 			   *event,
@@ -906,56 +914,59 @@ fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions,
 	proc_start = TimestampTzGetDatum(dimensions.proc_start);
 	client_addr = get_backend_client_addr(dimensions.client_addr, &is_null_client_addr);
 
-	values[0] = Int32GetDatum(dimensions.pid);
-	if (event_type)
+	if (dimensions_mask & PGWS_DIMENSIONS_PID)
+		values[0] = Int32GetDatum(dimensions.pid);
+	else
+		values[0] = (Datum) 0;
+	if (event_type && (dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT_TYPE))
 		values[1] = PointerGetDatum(cstring_to_text(event_type));
 	else
 		nulls[1] = true;
-	if (event)
+	if (event && (dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT))
 		values[2] = PointerGetDatum(cstring_to_text(event));
 	else
 		nulls[2] = true;
-	if (pgws_profileQueries || skip_mask)
+	if (pgws_profileQueries || (dimensions_mask & PGWD_DIMENSIONS_QUERY_ID))
 		values[3] = UInt64GetDatum(dimensions.queryId);
 	else
 		values[3] = (Datum) 0;
-	if ((pgws_profile_dimensions & PGWS_DIMENSIONS_ROLE_ID) || skip_mask)
+	if (dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
 		values[4] = ObjectIdGetDatum(dimensions.role_id);
 	else
 		nulls[4] = true;
-	if (pgws_profile_dimensions & PGWS_DIMENSIONS_DB_ID || skip_mask)
+	if (dimensions_mask & PGWS_DIMENSIONS_DB_ID)
 		values[5] = ObjectIdGetDatum(dimensions.database_id);
 	else
 		nulls[5] = true;
-	if (pgws_profile_dimensions & PGWS_DIMENSIONS_PARALLEL_LEADER_PID || skip_mask)
+	if (dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
 		values[6] = Int32GetDatum(dimensions.parallel_leader_pid);
 	else
 		nulls[6] = true;
-	if (pgws_profile_dimensions & PGWS_DIMENSIONS_IS_REGULAR_BE || skip_mask)
+	if (dimensions_mask & PGWS_DIMENSIONS_IS_REGULAR_BE)
 		values[7] = BoolGetDatum(dimensions.is_regular_backend);
 	else
 		nulls[7] = true;
-	if (backend_type && ((pgws_profile_dimensions & PGWS_DIMENSIONS_BE_TYPE) || skip_mask))
+	if (backend_type && (dimensions_mask & PGWS_DIMENSIONS_BE_TYPE))
 		values[8] = PointerGetDatum(cstring_to_text(backend_type));
 	else
 		nulls[8] = true;
-	if (!is_null_be_state && ((pgws_profile_dimensions & PGWS_DIMENSIONS_BE_STATE) || skip_mask))
+	if (!is_null_be_state && (dimensions_mask & PGWS_DIMENSIONS_BE_STATE))
 		values[9] = backend_state;
 	else
 		nulls[9] = true;
-	if ((pgws_profile_dimensions & PGWS_DIMENSIONS_BE_START_TIME) || skip_mask)
+	if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
 		values[10] = proc_start;
 	else
 		nulls[10] = true;
-	if (!is_null_client_addr && ((pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_ADDR) || skip_mask))
+	if (!is_null_client_addr && (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR))
 		values[11] = client_addr;
 	else
 		nulls[11] = true;
-	if ((pgws_profile_dimensions & PGWS_DIMENSIONS_CLIENT_HOSTNAME) || skip_mask)
+	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
 		values[12] = PointerGetDatum(cstring_to_text(dimensions.client_hostname));
 	else
 		nulls[12] = true;
-	if ((pgws_profile_dimensions & PGWS_DIMENSIONS_APPNAME) || skip_mask)
+	if (dimensions_mask & PGWS_DIMENSIONS_APPNAME)
 		values[13] = PointerGetDatum(cstring_to_text(dimensions.appname));
 	else
 		nulls[13] = true;
@@ -995,7 +1006,7 @@ pg_wait_sampling_get_current_extended(PG_FUNCTION_ARGS)
 			/* pg_wait_sampling_get_current_extended(pid int4) function */
 			HistoryItem		*item;
 			PGPROC			*proc;
-			PgBackendStatus *bestatus;
+			//PgBackendStatus *bestatus; not needed?
 
 			proc = search_proc(PG_GETARG_UINT32(0));
 
@@ -1021,12 +1032,12 @@ pg_wait_sampling_get_current_extended(PG_FUNCTION_ARGS)
 			{
 				PGPROC 			*proc = &ProcGlobal->allProcs[i];
 
-				if (!pgws_should_sample_proc(&proc,
+				if (!pgws_should_sample_proc(proc,
 											 &params->items[j].dimensions.pid,
 											 &params->items[j].dimensions.wait_event_info))
 					continue;
 
-				fill_dimensions(&params->items[j]->dimensions, proc, proc->pid,
+				fill_dimensions(&params->items[j].dimensions, proc, proc->pid,
 								proc->wait_event_info,
 								pgws_proc_queryids[proc - ProcGlobal->allProcs],
 								PGWS_DIMENSIONS_ALL);
@@ -1063,7 +1074,7 @@ pg_wait_sampling_get_current_extended(PG_FUNCTION_ARGS)
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		fill_values_and_nulls(values, nulls, item->dimensions, true);
+		fill_values_and_nulls(values, nulls, item->dimensions, PGWS_DIMENSIONS_ALL);
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
@@ -1179,99 +1190,131 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	return result;
 }
 
-
-PG_FUNCTION_INFO_V1(pg_wait_sampling_get_profile);
-Datum
-pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
+static void *
+deserialize_array(void *tmp_array, int count, Size real_item_size, bool is_history)
 {
-	Profile    *profile;
-	FuncCallContext *funcctx;
+	Pointer result;
+	int 	i;
+	int		dimensions_mask = (is_history ? saved_history_dimensions : saved_profile_dimensions);
+	int		serialized_size = get_serialized_size(saved_profile_dimensions, true);
 
-	check_shmem();
-
-	if (SRF_IS_FIRSTCALL())
+	result = palloc0(real_item_size * count);
+	for (i = 0; i < count; i++)
 	{
-		MemoryContext oldcontext;
-		TupleDesc	tupdesc;
+		SamplingDimensions	tmp_dimensions;
+		char			   *cur_item;
+		TimestampTz		   *ts;
+		uint64			   *count;
 
-		funcctx = SRF_FIRSTCALL_INIT();
-		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+		cur_item = (((char *) tmp_array) + i * serialized_size);
+		ts = (is_history ? palloc0(sizeof(TimestampTz)) : NULL);
+		count = (is_history ? NULL : palloc0(sizeof(uint64)));
 
-		/* Receive profile from shmq */
-		profile = (Profile *) palloc0(sizeof(Profile));
-		profile->items = (ProfileItem *) receive_array(PROFILE_REQUEST,
-													   sizeof(ProfileItem), &profile->count);
+		deserialize_item(&tmp_dimensions, cur_item, dimensions_mask, ts, count);
 
-		funcctx->user_fctx = profile;
-		funcctx->max_calls = profile->count;
+		memcpy((result + i * real_item_size), &tmp_dimensions, sizeof(SamplingDimensions));
 
-		/* Make tuple descriptor */
-		tupdesc = CreateTemplateTupleDesc(5);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "count",
-						   INT8OID, -1, 0);
-		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
-
-		MemoryContextSwitchTo(oldcontext);
+		if (is_history)
+			memcpy((result + i * real_item_size + serialized_size), ts, sizeof(TimestampTz));
+		else
+			memcpy((result + i * real_item_size + serialized_size), count, sizeof(uint64));
 	}
 
-	/* stuff done on every call of the function */
-	funcctx = SRF_PERCALL_SETUP();
-
-	profile = (Profile *) funcctx->user_fctx;
-
-	if (funcctx->call_cntr < funcctx->max_calls)
-	{
-		/* for each row */
-		Datum		values[5];
-		bool		nulls[5];
-		HeapTuple	tuple;
-		ProfileItem *item;
-		const char *event_type,
-				   *event;
-
-		item = &profile->items[funcctx->call_cntr];
-
-		MemSet(values, 0, sizeof(values));
-		MemSet(nulls, 0, sizeof(nulls));
-
-		/* Make and return next tuple to caller */
-		event_type = pgstat_get_wait_event_type(item->dimensions.wait_event_info);
-		event = pgstat_get_wait_event(item->dimensions.wait_event_info);
-		values[0] = Int32GetDatum(item->dimensions.pid);
-		if (event_type)
-			values[1] = PointerGetDatum(cstring_to_text(event_type));
-		else
-			nulls[1] = true;
-		if (event)
-			values[2] = PointerGetDatum(cstring_to_text(event));
-		else
-			nulls[2] = true;
-
-		if (pgws_profileQueries)
-			values[3] = UInt64GetDatum(item->dimensions.queryId);
-		else
-			values[3] = (Datum) 0;
-
-		values[4] = UInt64GetDatum(item->count);
-
-		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
-
-		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
-	}
-	else
-	{
-		/* nothing left */
-		SRF_RETURN_DONE(funcctx);
-	}
+	return result;
 }
+
+//PG_FUNCTION_INFO_V1(pg_wait_sampling_get_profile);
+//Datum
+//pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
+//{
+//	Profile    *profile;
+//	FuncCallContext *funcctx;
+//
+//	check_shmem();
+//
+//	if (SRF_IS_FIRSTCALL())
+//	{
+//		MemoryContext oldcontext;
+//		TupleDesc	tupdesc;
+//
+//		funcctx = SRF_FIRSTCALL_INIT();
+//		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+//
+//		/* Receive profile from shmq */
+//		profile = (Profile *) palloc0(sizeof(Profile));
+//		profile->items = (ProfileItem *) receive_array(PROFILE_REQUEST,
+//													   sizeof(ProfileItem), &profile->count);
+//
+//		funcctx->user_fctx = profile;
+//		funcctx->max_calls = profile->count;
+//
+//		/* Make tuple descriptor */
+//		tupdesc = CreateTemplateTupleDesc(5);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
+//						   INT4OID, -1, 0);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
+//						   TEXTOID, -1, 0);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
+//						   TEXTOID, -1, 0);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
+//						   INT8OID, -1, 0);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "count",
+//						   INT8OID, -1, 0);
+//		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
+//
+//		MemoryContextSwitchTo(oldcontext);
+//	}
+//
+//	/* stuff done on every call of the function */
+//	funcctx = SRF_PERCALL_SETUP();
+//
+//	profile = (Profile *) funcctx->user_fctx;
+//
+//	if (funcctx->call_cntr < funcctx->max_calls)
+//	{
+//		/* for each row */
+//		Datum		values[5];
+//		bool		nulls[5];
+//		HeapTuple	tuple;
+//		ProfileItem *item;
+//		const char *event_type,
+//				   *event;
+//
+//		item = &profile->items[funcctx->call_cntr];
+//
+//		MemSet(values, 0, sizeof(values));
+//		MemSet(nulls, 0, sizeof(nulls));
+//
+//		/* Make and return next tuple to caller */
+//		event_type = pgstat_get_wait_event_type(item->dimensions.wait_event_info);
+//		event = pgstat_get_wait_event(item->dimensions.wait_event_info);
+//		values[0] = Int32GetDatum(item->dimensions.pid);
+//		if (event_type)
+//			values[1] = PointerGetDatum(cstring_to_text(event_type));
+//		else
+//			nulls[1] = true;
+//		if (event)
+//			values[2] = PointerGetDatum(cstring_to_text(event));
+//		else
+//			nulls[2] = true;
+//
+//		if (pgws_profileQueries)
+//			values[3] = UInt64GetDatum(item->dimensions.queryId);
+//		else
+//			values[3] = (Datum) 0;
+//
+//		values[4] = UInt64GetDatum(item->count);
+//
+//		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+//
+//		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+//	}
+//	else
+//	{
+//		/* nothing left */
+//		SRF_RETURN_DONE(funcctx);
+//	}
+//}
 
 PG_FUNCTION_INFO_V1(pg_wait_sampling_get_profile_extended);
 Datum
@@ -1286,15 +1329,19 @@ pg_wait_sampling_get_profile_extended(PG_FUNCTION_ARGS)
 	{
 		MemoryContext oldcontext;
 		TupleDesc	tupdesc;
+		void	   *tmp_array;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
 		/* Receive profile from shmq */
 		profile = (Profile *) palloc0(sizeof(Profile));
-		profile->items = (ProfileItem *) receive_array(PROFILE_REQUEST,
-													   sizeof(ProfileItem), &profile->count);
-
+		
+		tmp_array = receive_array(PROFILE_REQUEST,
+								  get_serialized_size(saved_profile_dimensions, true),
+								  &profile->count);
+		profile->items = (ProfileItem *) deserialize_array(tmp_array, profile->count,
+														   sizeof(ProfileItem), false);
 		funcctx->user_fctx = profile;
 		funcctx->max_calls = profile->count;
 
@@ -1327,7 +1374,7 @@ pg_wait_sampling_get_profile_extended(PG_FUNCTION_ARGS)
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		fill_values_and_nulls(values, nulls, item->dimensions, false);
+		fill_values_and_nulls(values, nulls, item->dimensions, pgws_profile_dimensions);
 		values[14] = UInt64GetDatum(item->count);
 	
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
@@ -1373,95 +1420,95 @@ pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history);
-Datum
-pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
-{
-	History    *history;
-	FuncCallContext *funcctx;
-
-	check_shmem();
-
-	if (SRF_IS_FIRSTCALL())
-	{
-		MemoryContext oldcontext;
-		TupleDesc	tupdesc;
-
-		funcctx = SRF_FIRSTCALL_INIT();
-		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
-
-		/* Receive history from shmq */
-		history = (History *) palloc0(sizeof(History));
-		history->items = (HistoryItem *) receive_array(HISTORY_REQUEST,
-													   sizeof(HistoryItem), &history->count);
-
-		funcctx->user_fctx = history;
-		funcctx->max_calls = history->count;
-
-		/* Make tuple descriptor */
-		tupdesc = CreateTemplateTupleDesc(5);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "sample_ts",
-						   TIMESTAMPTZOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "event",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "queryid",
-						   INT8OID, -1, 0);
-		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
-
-		MemoryContextSwitchTo(oldcontext);
-	}
-
-	/* stuff done on every call of the function */
-	funcctx = SRF_PERCALL_SETUP();
-
-	history = (History *) funcctx->user_fctx;
-
-	if (history->index < history->count)
-	{
-		HeapTuple	tuple;
-		HistoryItem *item;
-		Datum		values[5];
-		bool		nulls[5];
-		const char *event_type,
-				   *event;
-
-		item = &history->items[history->index];
-
-		/* Make and return next tuple to caller */
-		MemSet(values, 0, sizeof(values));
-		MemSet(nulls, 0, sizeof(nulls));
-
-		event_type = pgstat_get_wait_event_type(item->dimensions.wait_event_info);
-		event = pgstat_get_wait_event(item->dimensions.wait_event_info);
-		values[0] = Int32GetDatum(item->dimensions.pid);
-		values[1] = TimestampTzGetDatum(item->ts);
-		if (event_type)
-			values[2] = PointerGetDatum(cstring_to_text(event_type));
-		else
-			nulls[2] = true;
-		if (event)
-			values[3] = PointerGetDatum(cstring_to_text(event));
-		else
-			nulls[3] = true;
-
-		values[4] = UInt64GetDatum(item->dimensions.queryId);
-		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
-
-		history->index++;
-		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
-	}
-	else
-	{
-		/* nothing left */
-		SRF_RETURN_DONE(funcctx);
-	}
-
-	PG_RETURN_VOID();
-}
+//PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history);
+//Datum
+//pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
+//{
+//	History    *history;
+//	FuncCallContext *funcctx;
+//
+//	check_shmem();
+//
+//	if (SRF_IS_FIRSTCALL())
+//	{
+//		MemoryContext oldcontext;
+//		TupleDesc	tupdesc;
+//
+//		funcctx = SRF_FIRSTCALL_INIT();
+//		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+//
+//		/* Receive history from shmq */
+//		history = (History *) palloc0(sizeof(History));
+//		history->items = (HistoryItem *) receive_array(HISTORY_REQUEST,
+//													   sizeof(HistoryItem), &history->count);
+//
+//		funcctx->user_fctx = history;
+//		funcctx->max_calls = history->count;
+//
+//		/* Make tuple descriptor */
+//		tupdesc = CreateTemplateTupleDesc(5);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
+//						   INT4OID, -1, 0);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "sample_ts",
+//						   TIMESTAMPTZOID, -1, 0);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "type",
+//						   TEXTOID, -1, 0);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "event",
+//						   TEXTOID, -1, 0);
+//		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "queryid",
+//						   INT8OID, -1, 0);
+//		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
+//
+//		MemoryContextSwitchTo(oldcontext);
+//	}
+//
+//	/* stuff done on every call of the function */
+//	funcctx = SRF_PERCALL_SETUP();
+//
+//	history = (History *) funcctx->user_fctx;
+//
+//	if (history->index < history->count)
+//	{
+//		HeapTuple	tuple;
+//		HistoryItem *item;
+//		Datum		values[5];
+//		bool		nulls[5];
+//		const char *event_type,
+//				   *event;
+//
+//		item = &history->items[history->index];
+//
+//		/* Make and return next tuple to caller */
+//		MemSet(values, 0, sizeof(values));
+//		MemSet(nulls, 0, sizeof(nulls));
+//
+//		event_type = pgstat_get_wait_event_type(item->dimensions.wait_event_info);
+//		event = pgstat_get_wait_event(item->dimensions.wait_event_info);
+//		values[0] = Int32GetDatum(item->dimensions.pid);
+//		values[1] = TimestampTzGetDatum(item->ts);
+//		if (event_type)
+//			values[2] = PointerGetDatum(cstring_to_text(event_type));
+//		else
+//			nulls[2] = true;
+//		if (event)
+//			values[3] = PointerGetDatum(cstring_to_text(event));
+//		else
+//			nulls[3] = true;
+//
+//		values[4] = UInt64GetDatum(item->dimensions.queryId);
+//		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+//
+//		history->index++;
+//		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+//	}
+//	else
+//	{
+//		/* nothing left */
+//		SRF_RETURN_DONE(funcctx);
+//	}
+//
+//	PG_RETURN_VOID();
+//}
 
 PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history_extended);
 Datum
@@ -1469,6 +1516,7 @@ pg_wait_sampling_get_history_extended(PG_FUNCTION_ARGS)
 {
 	History    *history;
 	FuncCallContext *funcctx;
+	void	   *tmp_array;
 
 	check_shmem();
 
@@ -1482,9 +1530,11 @@ pg_wait_sampling_get_history_extended(PG_FUNCTION_ARGS)
 
 		/* Receive history from shmq */
 		history = (History *) palloc0(sizeof(History));
-		history->items = (HistoryItem *) receive_array(HISTORY_REQUEST,
-													   sizeof(HistoryItem), &history->count);
-
+		tmp_array = receive_array(PROFILE_REQUEST,
+								  get_serialized_size(saved_history_dimensions, true),
+								  &history->count);
+		history->items = (HistoryItem *) deserialize_array(tmp_array, history->count,
+														   sizeof(HistoryItem), true);
 		funcctx->user_fctx = history;
 		funcctx->max_calls = history->count;
 
@@ -1516,7 +1566,7 @@ pg_wait_sampling_get_history_extended(PG_FUNCTION_ARGS)
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		fill_values_and_nulls(values, nulls, item->dimensions, false);
+		fill_values_and_nulls(values, nulls, item->dimensions, pgws_history_dimensions);
 		values[14] = TimestampTzGetDatum(item->ts); //TODO!!!!!!!!!!!
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);

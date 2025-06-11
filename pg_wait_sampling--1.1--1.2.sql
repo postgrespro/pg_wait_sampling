@@ -3,12 +3,9 @@
 -- complain if script is sourced in psql, rather than via ALTER EXTENSION
 \echo Use "ALTER EXTENSION pg_wait_sampling UPDATE TO 1.2" to load this file. \quit
 
-DROP FUNCTION pg_wait_sampling_get_profile (
-	OUT pid int4,
-	OUT event_type text,
-	OUT event text,
-	OUT count bigint
-) CASCADE;
+DROP FUNCTION pg_wait_sampling_get_current CASCADE;
+DROP FUNCTION pg_wait_sampling_get_profile CASCADE;
+DROP FUNCTION pg_wait_sampling_get_history CASCADE;
 
 CREATE FUNCTION pg_wait_sampling_get_current_extended (
 	pid int4,

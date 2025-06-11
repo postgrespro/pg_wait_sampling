@@ -30,16 +30,20 @@
 /* Values for sampling dimensions */
 #define PGWS_DIMENSIONS_NONE				0
 
-#define PGWS_DIMENSIONS_ROLE_ID				(1 << 0)
-#define PGWS_DIMENSIONS_DB_ID				(1 << 1)
-#define PGWS_DIMENSIONS_PARALLEL_LEADER_PID	(1 << 2)
-#define PGWS_DIMENSIONS_IS_REGULAR_BE		(1 << 3)
-#define PGWS_DIMENSIONS_BE_TYPE				(1 << 4)
-#define PGWS_DIMENSIONS_BE_STATE			(1 << 5)
-#define PGWS_DIMENSIONS_BE_START_TIME		(1 << 6)
-#define PGWS_DIMENSIONS_CLIENT_ADDR			(1 << 7)
-#define PGWS_DIMENSIONS_CLIENT_HOSTNAME		(1 << 8)
-#define PGWS_DIMENSIONS_APPNAME				(1 << 9)
+#define PGWS_DIMENSIONS_PID					(1 << 0)
+#define PGWS_DIMENSIONS_WAIT_EVENT_TYPE		(1 << 1)
+#define PGWS_DIMENSIONS_WAIT_EVENT			(1 << 2)
+#define PGWD_DIMENSIONS_QUERY_ID			(1 << 3)
+#define PGWS_DIMENSIONS_ROLE_ID				(1 << 4)
+#define PGWS_DIMENSIONS_DB_ID				(1 << 5)
+#define PGWS_DIMENSIONS_PARALLEL_LEADER_PID	(1 << 6)
+#define PGWS_DIMENSIONS_IS_REGULAR_BE		(1 << 7)
+#define PGWS_DIMENSIONS_BE_TYPE				(1 << 8)
+#define PGWS_DIMENSIONS_BE_STATE			(1 << 9)
+#define PGWS_DIMENSIONS_BE_START_TIME		(1 << 10)
+#define PGWS_DIMENSIONS_CLIENT_ADDR			(1 << 11)
+#define PGWS_DIMENSIONS_CLIENT_HOSTNAME		(1 << 12)
+#define PGWS_DIMENSIONS_APPNAME				(1 << 13)
 
 #define PGWS_DIMENSIONS_ALL					((int) ~0)
 /* ^ all 1 in binary */
@@ -111,6 +115,8 @@ extern int	pgws_profilePeriod;
 extern bool pgws_profilePid;
 extern int	pgws_profileQueries;
 extern bool pgws_sampleCpu;
+extern int	pgws_history_dimensions;
+extern int	pgws_profile_dimensions;
 
 /* pg_wait_sampling.c */
 extern CollectorShmqHeader *pgws_collector_hdr;
@@ -118,14 +124,17 @@ extern shm_mq *pgws_collector_mq;
 extern uint64 *pgws_proc_queryids;
 extern void pgws_init_lock_tag(LOCKTAG *tag, uint32 lock);
 extern bool pgws_should_sample_proc(PGPROC *proc, int *pid_p, uint32 *wait_event_info_p);
-extern int pgws_history_dimensions; /* bit mask that is derived from GUC */
-extern int pgws_profile_dimensions; /* bit mask that is derived from GUC */
 extern PgBackendStatus* get_beentry_by_procpid(int pid);
 
 /* collector.c */
+extern int saved_profile_dimensions;
+extern int saved_history_dimensions;
 extern void fill_dimensions(SamplingDimensions *dimensions, PGPROC *proc,
 							int pid, uint32 wait_event_info, uint64 queryId,
-							int dimensions_mask)
+							int dimensions_mask);
+extern void deserialize_item(SamplingDimensions* dimensions, char* serialized_item,
+							 int dimensions_mask, TimestampTz* ts, uint64* count);
+extern int get_serialized_size(int dimensions_mask, bool need_last_field);
 extern void pgws_register_wait_collector(void);
 extern PGDLLEXPORT void pgws_collector_main(Datum main_arg);
 

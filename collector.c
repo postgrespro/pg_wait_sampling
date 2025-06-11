@@ -40,6 +40,9 @@
 									  PGWS_DIMENSIONS_APPNAME))
 static volatile sig_atomic_t shutdown_requested = false;
 
+int saved_profile_dimensions; //TODO should be initialized with the same value as GUC? 
+int saved_history_dimensions;
+
 static void handle_sigterm(SIGNAL_ARGS);
 
 /*
@@ -73,6 +76,8 @@ alloc_history(History *observations, int count)
 	observations->index = 0;
 	observations->count = count;
 	observations->wraparound = false;
+
+	saved_history_dimensions = pgws_history_dimensions;
 }
 
 /*
@@ -117,6 +122,8 @@ realloc_history(History *observations, int count)
 	observations->index = copyCount;
 	observations->count = count;
 	observations->wraparound = false;
+
+	saved_history_dimensions = pgws_history_dimensions;
 }
 
 static void
@@ -157,13 +164,20 @@ fill_dimensions(SamplingDimensions *dimensions, PGPROC *proc,
 	Oid		role_id = proc->roleId;
 	Oid		database_id = proc->databaseId;
 	PGPROC *lockGroupLeader = proc->lockGroupLeader;
+#if PG_VERSION_NUM >= 180000
 	bool	is_regular_backend = proc->isRegularBackend;
+#else
+	bool	is_regular_backend = !proc->isBackgroundWorker;
+#endif
 
-	dimensions->pid = pid;
+	if (dimensions_mask & PGWS_DIMENSIONS_PID)
+		dimensions->pid = pid;
 
-	dimensions->wait_event_info = wait_event_info;
+	if (dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT_TYPE ||
+		dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT)
+		dimensions->wait_event_info = wait_event_info;
 
-	if (pgws_profileQueries)
+	if (pgws_profileQueries || (dimensions_mask & PGWD_DIMENSIONS_QUERY_ID))
 		dimensions->queryId = queryId;
 
 	/* Copy everything we need from PGPROC */
@@ -217,13 +231,17 @@ static void
 copy_dimensions (SamplingDimensions *dst, SamplingDimensions *src,
 				 int dst_dimensions_mask)
 {
-	dst->pid = src->pid;
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_PID)
+		dst->pid = src->pid;
 
-	dst->wait_event_info = src->wait_event_info;
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT_TYPE ||
+		dst_dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT)
+		dst->wait_event_info = src->wait_event_info;
 
-	dst->queryId = src->queryId;
+	if (dst_dimensions_mask & PGWD_DIMENSIONS_QUERY_ID)
+		dst->queryId = src->queryId;
 
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
+	if (dst_dimensions_mask & PGWD_DIMENSIONS_QUERY_ID)
 		dst->role_id = src->role_id;
 
 	if (dst_dimensions_mask & PGWS_DIMENSIONS_DB_ID)
@@ -254,6 +272,283 @@ copy_dimensions (SamplingDimensions *dst, SamplingDimensions *src,
 		strcpy(dst->appname, src->appname);
 }
 
+int
+get_serialized_size(int dimensions_mask, bool need_last_field)
+{
+	int					serialized_size = 0;
+	SamplingDimensions	dimensions = {0}; /* Used only for sizeof */
+
+	if (dimensions_mask & PGWS_DIMENSIONS_PID)
+		serialized_size += sizeof(dimensions.pid);
+	if (dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT_TYPE ||
+		dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT)
+		serialized_size += sizeof(dimensions.wait_event_info);
+	if (dimensions_mask & PGWD_DIMENSIONS_QUERY_ID)
+		serialized_size += sizeof(dimensions.queryId);
+	if (dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
+		serialized_size += sizeof(dimensions.role_id);
+	if (dimensions_mask & PGWS_DIMENSIONS_DB_ID)
+		serialized_size += sizeof(dimensions.database_id);
+	if (dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+		serialized_size += sizeof(dimensions.parallel_leader_pid);
+	if (dimensions_mask & PGWS_DIMENSIONS_IS_REGULAR_BE)
+		serialized_size += sizeof(dimensions.is_regular_backend);
+	if (dimensions_mask & PGWS_DIMENSIONS_BE_TYPE)
+		serialized_size += sizeof(dimensions.backend_type);
+	if (dimensions_mask & PGWS_DIMENSIONS_BE_STATE)
+		serialized_size += sizeof(dimensions.backend_state);
+	if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
+		serialized_size += sizeof(dimensions.proc_start);
+	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR)
+		serialized_size += sizeof(dimensions.client_addr);
+	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+		serialized_size += sizeof(dimensions.client_hostname);
+	if (dimensions_mask & PGWS_DIMENSIONS_APPNAME)
+		serialized_size += sizeof(dimensions.appname);
+	/* timestamp of history and count of profile are both 8 bytes */
+	if (need_last_field)
+		serialized_size += sizeof(uint64);
+	return serialized_size;
+}
+
+static void
+serialize_item(SamplingDimensions dimensions, int dimensions_mask,
+			   char **serialized_item, char **serialized_key, int *serialized_size,
+			   TimestampTz ts, uint64 count, bool is_history)
+{
+	char	 dummy_array[sizeof(SamplingDimensions) + sizeof(uint64) + 1];
+
+	memset(dummy_array, 0, sizeof(dummy_array));
+
+	if (dimensions_mask & PGWS_DIMENSIONS_PID)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.pid,
+			   sizeof(dimensions.pid));
+		*serialized_size += sizeof(dimensions.pid);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT_TYPE ||
+		dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.wait_event_info,
+			   sizeof(dimensions.wait_event_info));
+		*serialized_size += sizeof(dimensions.wait_event_info);
+	}
+
+	if (dimensions_mask & PGWD_DIMENSIONS_QUERY_ID)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.queryId,
+			   sizeof(dimensions.queryId));
+		*serialized_size += sizeof(dimensions.queryId);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.role_id,
+			   sizeof(dimensions.role_id));
+		*serialized_size += sizeof(dimensions.role_id);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_DB_ID)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.database_id,
+			   sizeof(dimensions.database_id));
+		*serialized_size += sizeof(dimensions.database_id);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.parallel_leader_pid,
+			   sizeof(dimensions.parallel_leader_pid));
+		*serialized_size += sizeof(dimensions.parallel_leader_pid);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_IS_REGULAR_BE)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.is_regular_backend,
+			   sizeof(dimensions.is_regular_backend));
+		*serialized_size += sizeof(dimensions.is_regular_backend);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_BE_TYPE)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.backend_type,
+			   sizeof(dimensions.backend_type));
+		*serialized_size += sizeof(dimensions.backend_type);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_BE_STATE)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.backend_state,
+			   sizeof(dimensions.backend_state));
+		*serialized_size += sizeof(dimensions.backend_state);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.proc_start,
+			   sizeof(dimensions.proc_start));
+		*serialized_size += sizeof(dimensions.proc_start);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.client_addr,
+			   sizeof(dimensions.client_addr));
+		*serialized_size += sizeof(dimensions.client_addr);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.client_hostname,
+			   sizeof(dimensions.client_hostname));
+		*serialized_size += sizeof(dimensions.client_hostname);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_APPNAME)
+	{
+		memcpy(dummy_array + *serialized_size, &dimensions.appname,
+			   sizeof(dimensions.appname));
+		*serialized_size += sizeof(dimensions.appname);
+	}
+
+	/* copy all the fields without ts/count */
+	*serialized_key = palloc0(*serialized_size + 1);
+	strcpy(*serialized_key, dummy_array);
+
+	if (is_history)
+	{
+		memcpy(dummy_array + *serialized_size, &ts,
+			   sizeof(TimestampTz));
+		*serialized_size += sizeof(TimestampTz);
+	}
+	else
+	{
+		memcpy(dummy_array + *serialized_size, &count,
+			   sizeof(uint64));
+		*serialized_size += sizeof(uint64);
+	}
+
+	/* copy everything */
+	*serialized_item = palloc0(*serialized_size + 1);
+	strcpy(*serialized_item, dummy_array);
+}
+
+void
+deserialize_item(SamplingDimensions *dimensions, char *serialized_item,
+				 int dimensions_mask, TimestampTz *ts, uint64 *count)
+{
+	int 				idx = 0;
+
+	memset(dimensions, 0, sizeof(SamplingDimensions));
+
+	if (dimensions_mask & PGWS_DIMENSIONS_PID)
+	{
+		memcpy(&dimensions->pid, serialized_item + idx,
+			   sizeof(dimensions->pid));
+		idx += sizeof(dimensions->pid);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT_TYPE ||
+		dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT)
+	{
+		memcpy(&dimensions->wait_event_info, serialized_item + idx,
+			   sizeof(dimensions->wait_event_info));
+		idx += sizeof(dimensions->wait_event_info);
+	}
+
+	if (dimensions_mask & PGWD_DIMENSIONS_QUERY_ID)
+	{
+		memcpy(&dimensions->queryId, serialized_item + idx,
+			   sizeof(dimensions->queryId));
+		idx += sizeof(dimensions->queryId);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
+	{
+		memcpy(&dimensions->role_id, serialized_item + idx,
+			   sizeof(dimensions->role_id));
+		idx += sizeof(dimensions->role_id);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_DB_ID)
+	{
+		memcpy(&dimensions->database_id, serialized_item + idx,
+			   sizeof(dimensions->database_id));
+		idx += sizeof(dimensions->database_id);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+	{
+		memcpy(&dimensions->parallel_leader_pid, serialized_item + idx,
+			   sizeof(dimensions->parallel_leader_pid));
+		idx += sizeof(dimensions->parallel_leader_pid);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_IS_REGULAR_BE)
+	{
+		memcpy(&dimensions->is_regular_backend, serialized_item + idx,
+			   sizeof(dimensions->is_regular_backend));
+		idx += sizeof(dimensions->is_regular_backend);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_BE_TYPE)
+	{
+		memcpy(&dimensions->backend_type, serialized_item + idx,
+			   sizeof(dimensions->backend_type));
+		idx += sizeof(dimensions->backend_type);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_BE_STATE)
+	{
+		memcpy(&dimensions->backend_state, serialized_item + idx,
+			   sizeof(dimensions->backend_state));
+		idx += sizeof(dimensions->backend_state);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
+	{
+		memcpy(&dimensions->proc_start, serialized_item + idx,
+			   sizeof(dimensions->proc_start));
+		idx += sizeof(dimensions->proc_start);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR)
+	{
+		memcpy(&dimensions->client_addr, serialized_item + idx,
+			   sizeof(dimensions->client_addr));
+		idx += sizeof(dimensions->client_addr);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+	{
+		memcpy(&dimensions->client_hostname, serialized_item + idx,
+			   sizeof(dimensions->client_hostname));
+		idx += sizeof(dimensions->client_hostname);
+	}
+
+	if (dimensions_mask & PGWS_DIMENSIONS_APPNAME)
+	{
+		memcpy(&dimensions->appname, serialized_item + idx,
+			   sizeof(dimensions->appname));
+		idx += sizeof(dimensions->appname);
+	}
+
+	if (ts)
+	{
+		memcpy(ts, serialized_item + idx,
+			   sizeof(TimestampTz));
+		idx += sizeof(TimestampTz);
+	}
+
+	if (count)
+	{
+		memcpy(count, serialized_item + idx,
+			   sizeof(uint64));
+		idx += sizeof(uint64);
+	}
+}
+
 /*
  * Read current waits from backends and write them to history array
  * and/or profile hash.
@@ -281,7 +576,9 @@ probe_waits(History *observations, HTAB *profile_hash,
 		PGPROC	   *proc = &ProcGlobal->allProcs[i];
 		int 		pid;
 		uint32		wait_event_info;
-		SamplingDimensions common_dimensions;
+		SamplingDimensions common_dimensions,
+						   history_dimensions,
+						   profile_dimensions;
 		int			dimensions_mask_common = pgws_history_dimensions |
 											 pgws_profile_dimensions;
 
@@ -290,28 +587,30 @@ probe_waits(History *observations, HTAB *profile_hash,
 			continue;
 
 		/*
-		 * We zero items and dimensions with memset
-		 * to avoid doing it field-by-field
+		 * We zero dimensions with memset to avoid doing it field-by-field
 		 */
-		memset(&item_history, 0, sizeof(HistoryItem));
-		memset(&item_profile, 0, sizeof(ProfileItem));
+		memset(&history_dimensions, 0, sizeof(SamplingDimensions));
+		memset(&profile_dimensions, 0, sizeof(SamplingDimensions));
 		memset(&common_dimensions, 0, sizeof(SamplingDimensions));
 
 		fill_dimensions(&common_dimensions, proc, pid, wait_event_info,
 						pgws_proc_queryids[i], dimensions_mask_common);
 
-		copy_dimensions(&item_history.dimensions,
+		copy_dimensions(&history_dimensions,
 						&common_dimensions,
 						pgws_history_dimensions);
-		copy_dimensions(&item_history.dimensions,
+		copy_dimensions(&profile_dimensions,
 						&common_dimensions,
 						pgws_profile_dimensions);
 
 		item_history.ts = ts;
+		item_history.dimensions = history_dimensions;
 
 		/* Write to the history if needed */
 		if (write_history)
 		{
+			//TODO вот тут что-то сделать нужно??? потому что мы не запаковываем
+			//историю
 			observation = get_next_observation(observations);
 			*observation = item_history;
 		}
@@ -319,18 +618,33 @@ probe_waits(History *observations, HTAB *profile_hash,
 		/* Write to the profile if needed */
 		if (write_profile)
 		{
-			ProfileItem *profileItem;
-			bool		found;
+			bool		 found;
+			int			 serialized_size = 0;
+			uint64		 count = 1;
+			char		*serialized_key,
+						*serialized_item,
+						*stored_item;
 
 			if (!profile_pid)
 				item_profile.dimensions.pid = 0;
 
-			profileItem = (ProfileItem *) hash_search(profile_hash, &item_profile,
-													  HASH_ENTER, &found);
+			serialize_item(item_profile.dimensions, saved_profile_dimensions,
+						   &serialized_item, &serialized_key, &serialized_size,
+						   (TimestampTz) 0, count, false);
+
+			stored_item = (char *) hash_search(profile_hash, serialized_key, 
+											   HASH_ENTER, &found);
+
 			if (found)
-				profileItem->count++;
+			{
+				memcpy(&count, (stored_item + serialized_size - sizeof(uint64)),
+					   sizeof(uint64));
+				count++;
+				memcpy((stored_item + serialized_size - sizeof(uint64)), &count,
+					   sizeof(uint64));
+			}
 			else
-				profileItem->count = 1;
+				memcpy(stored_item, serialized_item, serialized_size);
 		}
 	}
 	LWLockRelease(ProcArrayLock);
@@ -426,14 +740,17 @@ make_profile_hash()
 {
 	HASHCTL		hash_ctl;
 
+	saved_profile_dimensions = pgws_profile_dimensions;
+
 	/*
 	 * Since adding additional dimensions we use SamplingDimensions as
 	 * hashtable key. This is fine for cases when some fields are 0 since
 	 * it doesn't impede our ability to search the hash table for entries
 	 */
-	hash_ctl.keysize = sizeof(SamplingDimensions);
+	hash_ctl.keysize = get_serialized_size(saved_profile_dimensions, false);
+	/* entry includes SamplingDimensions and ts/count */
+	hash_ctl.entrysize = get_serialized_size(saved_profile_dimensions, true);
 
-	hash_ctl.entrysize = sizeof(ProfileItem);
 	return hash_create("Waits profile hash", 1024, &hash_ctl,
 					   HASH_ELEM | HASH_BLOBS);
 }
