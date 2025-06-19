@@ -808,7 +808,25 @@ pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 {
 	LOCKTAG		collectorTag;
 
+	/*
+	 * This also guards against the case when the
+	 * extension was not loaded at all, but this
+	 * function was called. pgws_collector_hdr is
+	 * NULL in this case.
+	 */
 	check_shmem();
+
+        /* The collector may have not started yet (it'd be a
+         * race condition with background worker startup to
+         * use latch without a check here).
+         * Or worse, registration of the worker might have been
+         * denied, if there are too many workers already.
+         * This is why we cannot wait for its start with a while
+         * loop.
+         */
+	if (!pgws_collector_hdr->latch)
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("pg_wait_sampling collector wasn't started")));
 
 	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
 
