@@ -1,7 +1,7 @@
 dist: jammy
 language: c
 env:
-- PG_MAJOR=18 SNAPSHOT=1
+- PG_MAJOR=18 BETA=1
 - PG_MAJOR=17
 - PG_MAJOR=16
 - PG_MAJOR=15
