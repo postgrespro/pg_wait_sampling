@@ -91,6 +91,8 @@ typedef struct
 	bool		wraparound;
 	Size		index;
 	Size		count;
+	char		*serialized_items;
+	/* used only in pg_wait_sampling.c */
 	HistoryItem *items;
 } History;
 

@@ -3,9 +3,26 @@
 -- complain if script is sourced in psql, rather than via ALTER EXTENSION
 \echo Use "ALTER EXTENSION pg_wait_sampling UPDATE TO 1.2" to load this file. \quit
 
-DROP FUNCTION pg_wait_sampling_get_current CASCADE;
-DROP FUNCTION pg_wait_sampling_get_profile CASCADE;
-DROP FUNCTION pg_wait_sampling_get_history CASCADE;
+--DROP FUNCTION pg_wait_sampling_get_current (
+--	pid int4,
+--	OUT pid int4,
+--	OUT event_type text,
+--	OUT event text
+--) CASCADE;
+--
+--DROP FUNCTION pg_wait_sampling_get_history (
+--	OUT pid int4,
+--	OUT ts timestamptz,
+--	OUT event_type text,
+--	OUT event text
+--) CASCADE;
+--
+--DROP FUNCTION pg_wait_sampling_get_profile (
+--	OUT pid int4,
+--	OUT event_type text,
+--	OUT event text,
+--	OUT count bigint
+--) CASCADE;
 
 CREATE FUNCTION pg_wait_sampling_get_current_extended (
 	pid int4,
@@ -35,7 +52,6 @@ GRANT SELECT ON pg_wait_sampling_current TO PUBLIC;
 
 CREATE FUNCTION pg_wait_sampling_get_history_extended (
 	OUT pid int4,
-	OUT ts timestamptz,
 	OUT event_type text,
 	OUT event text,
 	OUT queryid int8,
@@ -48,7 +64,8 @@ CREATE FUNCTION pg_wait_sampling_get_history_extended (
 	OUT proc_start timestamptz,
 	OUT client_addr text,
 	OUT client_hostname text,
-	OUT appname text
+	OUT appname text,
+	OUT ts timestamptz
 )
 RETURNS SETOF record
 AS 'MODULE_PATHNAME'
@@ -85,9 +102,9 @@ CREATE VIEW pg_wait_sampling_profile_extended AS
 
 GRANT SELECT ON pg_wait_sampling_profile_extended TO PUBLIC;
 
-CREATE VIEW pg_wait_sampling_profile AS
-	SELECT pid, event_type, event, queryid, SUM(count) FROM pg_wait_sampling_profile_extended
-	GROUP BY pid, event_type, event, queryid;
-
-GRANT SELECT ON pg_wait_sampling_profile TO PUBLIC;
+--CREATE VIEW pg_wait_sampling_profile AS
+--	SELECT pid, event_type, event, queryid, SUM(count) FROM pg_wait_sampling_profile_extended
+--	GROUP BY pid, event_type, event, queryid;
+--
+--GRANT SELECT ON pg_wait_sampling_profile TO PUBLIC;
 

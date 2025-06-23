@@ -40,7 +40,7 @@
 									  PGWS_DIMENSIONS_APPNAME))
 static volatile sig_atomic_t shutdown_requested = false;
 
-int saved_profile_dimensions; //TODO should be initialized with the same value as GUC? 
+int saved_profile_dimensions;
 int saved_history_dimensions;
 
 static void handle_sigterm(SIGNAL_ARGS);
@@ -72,12 +72,15 @@ pgws_register_wait_collector(void)
 static void
 alloc_history(History *observations, int count)
 {
-	observations->items = (HistoryItem *) palloc0(sizeof(HistoryItem) * count);
+	int serialized_size;
+
+	saved_history_dimensions = pgws_history_dimensions;
+	serialized_size = get_serialized_size(saved_history_dimensions, true);
+
+	observations->serialized_items = (char *) palloc0(serialized_size * count);
 	observations->index = 0;
 	observations->count = count;
 	observations->wraparound = false;
-
-	saved_history_dimensions = pgws_history_dimensions;
 }
 
 /*
@@ -86,13 +89,17 @@ alloc_history(History *observations, int count)
 static void
 realloc_history(History *observations, int count)
 {
-	HistoryItem *newitems;
+	char	   *newitems;
 	int			copyCount,
 				i,
 				j;
+	int			serialized_size;
+
+	//saved_history_dimensions = pgws_history_dimensions; // TODO вроде как
+	serialized_size = get_serialized_size(saved_history_dimensions, true);
 
 	/* Allocate new array for history */
-	newitems = (HistoryItem *) palloc0(sizeof(HistoryItem) * count);
+	newitems = (char *) palloc0(serialized_size * count);
 
 	/* Copy entries from old array to the new */
 	if (observations->wraparound)
@@ -111,19 +118,19 @@ realloc_history(History *observations, int count)
 	{
 		if (j >= observations->count)
 			j = 0;
-		memcpy(&newitems[i], &observations->items[j], sizeof(HistoryItem));
+		memcpy((newitems + i * serialized_size),
+			   (observations->serialized_items + j * serialized_size),
+				serialized_size);
 		i++;
 		j++;
 	}
 
 	/* Switch to new history array */
-	pfree(observations->items);
-	observations->items = newitems;
+	pfree(observations->serialized_items);
+	observations->serialized_items = newitems;
 	observations->index = copyCount;
 	observations->count = count;
 	observations->wraparound = false;
-
-	saved_history_dimensions = pgws_history_dimensions;
 }
 
 static void
@@ -140,10 +147,11 @@ handle_sigterm(SIGNAL_ARGS)
 /*
  * Get next item of history with rotation.
  */
-static HistoryItem *
+static char *
 get_next_observation(History *observations)
 {
-	HistoryItem *result;
+	char		*result;
+	int			 serialized_size = get_serialized_size(saved_history_dimensions, true);
 
 	/* Check for wraparound */
 	if (observations->index >= observations->count)
@@ -151,7 +159,7 @@ get_next_observation(History *observations)
 		observations->index = 0;
 		observations->wraparound = true;
 	}
-	result = &observations->items[observations->index];
+	result = &observations->serialized_items[observations->index * serialized_size];
 	observations->index++;
 	return result;
 }
@@ -413,8 +421,8 @@ serialize_item(SamplingDimensions dimensions, int dimensions_mask,
 	}
 
 	/* copy all the fields without ts/count */
-	*serialized_key = palloc0(*serialized_size + 1);
-	strcpy(*serialized_key, dummy_array);
+	*serialized_key = palloc0(*serialized_size);
+	memcpy(*serialized_key, dummy_array, *serialized_size);
 
 	if (is_history)
 	{
@@ -430,8 +438,8 @@ serialize_item(SamplingDimensions dimensions, int dimensions_mask,
 	}
 
 	/* copy everything */
-	*serialized_item = palloc0(*serialized_size + 1);
-	strcpy(*serialized_item, dummy_array);
+	*serialized_item = palloc0(*serialized_size);
+	memcpy(*serialized_item, dummy_array, *serialized_size);
 }
 
 void
@@ -570,17 +578,17 @@ probe_waits(History *observations, HTAB *profile_hash,
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 	for (i = 0; i < ProcGlobal->allProcCount; i++)
 	{
-		HistoryItem item_history,
-				   *observation;
-		ProfileItem item_profile;
+		//HistoryItem item_history,
+		//		   *observation;
+		//ProfileItem item_profile;
 		PGPROC	   *proc = &ProcGlobal->allProcs[i];
 		int 		pid;
 		uint32		wait_event_info;
 		SamplingDimensions common_dimensions,
 						   history_dimensions,
 						   profile_dimensions;
-		int			dimensions_mask_common = pgws_history_dimensions |
-											 pgws_profile_dimensions;
+		int			dimensions_mask_common = saved_history_dimensions |
+											 saved_profile_dimensions;
 
 		/* Check if we need to sample this process */
 		if (!pgws_should_sample_proc(proc, &pid, &wait_event_info))
@@ -598,21 +606,27 @@ probe_waits(History *observations, HTAB *profile_hash,
 
 		copy_dimensions(&history_dimensions,
 						&common_dimensions,
-						pgws_history_dimensions);
+						saved_history_dimensions);
 		copy_dimensions(&profile_dimensions,
 						&common_dimensions,
-						pgws_profile_dimensions);
+						saved_profile_dimensions);
 
-		item_history.ts = ts;
-		item_history.dimensions = history_dimensions;
+		//item_history.ts = ts;
+		//item_history.dimensions = history_dimensions;
 
 		/* Write to the history if needed */
 		if (write_history)
 		{
-			//TODO вот тут что-то сделать нужно??? потому что мы не запаковываем
-			//историю
+			char		*serialized_key,
+						*serialized_item,
+						*observation;
+			int			 serialized_size = 0;
+
 			observation = get_next_observation(observations);
-			*observation = item_history;
+			serialize_item(history_dimensions, saved_history_dimensions,
+						   &serialized_item, &serialized_key, &serialized_size,
+						   ts, (uint64) 0, true);
+			memcpy(observation, serialized_item, serialized_size);
 		}
 
 		/* Write to the profile if needed */
@@ -626,9 +640,9 @@ probe_waits(History *observations, HTAB *profile_hash,
 						*stored_item;
 
 			if (!profile_pid)
-				item_profile.dimensions.pid = 0;
+				profile_dimensions.pid = 0;
 
-			serialize_item(item_profile.dimensions, saved_profile_dimensions,
+			serialize_item(profile_dimensions, saved_profile_dimensions,
 						   &serialized_item, &serialized_key, &serialized_size,
 						   (TimestampTz) 0, count, false);
 
@@ -659,8 +673,9 @@ probe_waits(History *observations, HTAB *profile_hash,
  * Send waits history to shared memory queue.
  */
 static void
-send_history(History *observations, shm_mq_handle *mqh)
+send_history(History *observations, shm_mq_handle *mqh) //TODO TODO TODO
 {
+	int			serialized_size = get_serialized_size(saved_history_dimensions, true);
 	Size		count,
 				i;
 	shm_mq_result mq_result;
@@ -679,11 +694,20 @@ send_history(History *observations, shm_mq_handle *mqh)
 						"receiver of message queue has been detached")));
 		return;
 	}
+	/* Send saved_dimensions next */
+	mq_result = shm_mq_send_compat(mqh, sizeof(saved_history_dimensions), &saved_history_dimensions, false, true);
+	if (mq_result == SHM_MQ_DETACHED)
+	{
+		ereport(WARNING,
+				(errmsg("pg_wait_sampling collector: "
+						"receiver of message queue has been detached")));
+		return;
+	}
 	for (i = 0; i < count; i++)
 	{
 		mq_result = shm_mq_send_compat(mqh,
-									   sizeof(HistoryItem),
-									   &observations->items[i],
+									   serialized_size,
+									   (observations->serialized_items + i * serialized_size),
 									   false,
 									   true);
 		if (mq_result == SHM_MQ_DETACHED)
@@ -703,7 +727,8 @@ static void
 send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 {
 	HASH_SEQ_STATUS scan_status;
-	ProfileItem *item;
+	char	   *serialized_item;
+	int			serialized_size = get_serialized_size(saved_profile_dimensions, true);
 	Size		count = hash_get_num_entries(profile_hash);
 	shm_mq_result mq_result;
 
@@ -716,10 +741,19 @@ send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 						"receiver of message queue has been detached")));
 		return;
 	}
-	hash_seq_init(&scan_status, profile_hash);
-	while ((item = (ProfileItem *) hash_seq_search(&scan_status)) != NULL)
+	/* Send saved_dimensions next */
+	mq_result = shm_mq_send_compat(mqh, sizeof(saved_profile_dimensions), &saved_profile_dimensions, false, true);
+	if (mq_result == SHM_MQ_DETACHED)
 	{
-		mq_result = shm_mq_send_compat(mqh, sizeof(ProfileItem), item, false,
+		ereport(WARNING,
+				(errmsg("pg_wait_sampling collector: "
+						"receiver of message queue has been detached")));
+		return;
+	}
+	hash_seq_init(&scan_status, profile_hash);
+	while ((serialized_item = (char *) hash_seq_search(&scan_status)) != NULL)
+	{
+		mq_result = shm_mq_send_compat(mqh, serialized_size, serialized_item, false,
 									   true);
 		if (mq_result == SHM_MQ_DETACHED)
 		{
