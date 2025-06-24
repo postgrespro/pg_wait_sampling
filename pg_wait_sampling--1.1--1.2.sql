@@ -102,6 +102,14 @@ CREATE VIEW pg_wait_sampling_profile_extended AS
 
 GRANT SELECT ON pg_wait_sampling_profile_extended TO PUBLIC;
 
+CREATE FUNCTION pg_wait_sampling_reset_history()
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C VOLATILE STRICT;
+
+-- Don't want this to be available to non-superusers.
+REVOKE ALL ON FUNCTION pg_wait_sampling_reset_history() FROM PUBLIC;
+
 --CREATE VIEW pg_wait_sampling_profile AS
 --	SELECT pid, event_type, event, queryid, SUM(count) FROM pg_wait_sampling_profile_extended
 --	GROUP BY pid, event_type, event, queryid;

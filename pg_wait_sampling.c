@@ -1439,6 +1439,34 @@ pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+PG_FUNCTION_INFO_V1(pg_wait_sampling_reset_history);
+Datum
+pg_wait_sampling_reset_history(PG_FUNCTION_ARGS)
+{
+	LOCKTAG		collectorTag;
+
+	check_shmem();
+
+	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
+
+	LockAcquire(&queueTag, ExclusiveLock, false, false);
+
+	pgws_init_lock_tag(&collectorTag, PGWS_COLLECTOR_LOCK);
+	LockAcquire(&collectorTag, ExclusiveLock, false, false);
+	pgws_collector_hdr->request = HISTORY_RESET;
+	LockRelease(&collectorTag, ExclusiveLock, false);
+	
+	if (!pgws_collector_hdr->latch)
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("pg_wait_sampling collector wasn't started")));
+
+	SetLatch(pgws_collector_hdr->latch);
+
+	LockRelease(&queueTag, ExclusiveLock, false);
+
+	PG_RETURN_VOID();
+}
+
 //TODO OBSOLETE
 PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history);
 Datum

@@ -961,6 +961,12 @@ pgws_collector_main(Datum main_arg)
 				}
 				shm_mq_detach(mqh);
 			}
+			else if (request == HISTORY_RESET)
+			{
+				/* Reset history */
+				pfree(observations.items);
+				alloc_history(&observations, pgws_historySize);
+			}
 			else if (request == PROFILE_RESET)
 			{
 				/* Reset profile hash */
