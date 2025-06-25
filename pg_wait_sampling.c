@@ -129,6 +129,20 @@ static const struct config_enum_entry pgws_profile_queries_options[] =
 	{NULL, 0, false}
 };
 
+/* like in pg_stat_statements */
+typedef enum pgwsVersion
+{
+	PGWS_V1_1 = 0,
+	PGWS_V1_2,
+} pgwsVersion;
+
+Datum pg_wait_sampling_get_current_internal(FunctionCallInfo fcinfo,
+											pgwsVersion api_version);
+Datum pg_wait_sampling_get_profile_internal(FunctionCallInfo fcinfo,
+											pgwsVersion api_version);
+Datum pg_wait_sampling_get_history_internal(FunctionCallInfo fcinfo,
+											pgwsVersion api_version);
+
 int			pgws_historySize = 5000;
 int			pgws_historyPeriod = 10;
 int			pgws_profilePeriod = 10;
@@ -739,11 +753,16 @@ get_beentry_by_procpid(int pid)
 	return NULL;
 }
 
+/* like in pg_stat_statements */
+#define PG_WAIT_SAMPLING_COLS_V1_1	5
+#define PG_WAIT_SAMPLING_COLS_V1_2	15
+#define PG_WAIT_SAMPLING_COLS		15	/* maximum of above */
+
 /*
  * Common routine to fill "dimensions" part of tupdesc
  */
 static void
-fill_tuple_desc (TupleDesc tupdesc)
+fill_tuple_desc (TupleDesc tupdesc, pgwsVersion api_version)
 {
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
 					   INT4OID, -1, 0);
@@ -753,30 +772,34 @@ fill_tuple_desc (TupleDesc tupdesc)
 					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
 					   INT8OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 5, "role_id",
-					   INT8OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 6, "database_id",
-					   INT8OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 7, "parallel_leader_pid",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 8, "is_regular_backend",
-					   BOOLOID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 9, "backend_type",
-					   TEXTOID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 10, "backend_state",
-					   TEXTOID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 11, "proc_start",
-					   TIMESTAMPTZOID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 12, "client_addr",
-					   TEXTOID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 13, "client_hostname",
-					   TEXTOID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 14, "appname",
-					   TEXTOID, -1, 0);
+	if (api_version >= PGWS_V1_2)
+	{
+		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "role_id",
+						INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "database_id",
+						INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "parallel_leader_pid",
+						INT4OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 8, "is_regular_backend",
+						BOOLOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 9, "backend_type",
+						TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 10, "backend_state",
+						TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 11, "proc_start",
+						TIMESTAMPTZOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 12, "client_addr",
+						TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 13, "client_hostname",
+						TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 14, "appname",
+						TEXTOID, -1, 0);
+	}
 }
 
 static void
-fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions, int dimensions_mask)
+fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions,
+					  int dimensions_mask, pgwsVersion api_version)
 {
 	const char *event_type,
 			   *event,
@@ -812,52 +835,87 @@ fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions,
 		values[4] = ObjectIdGetDatum(dimensions.role_id);
 	else
 		nulls[4] = true;
-	if (dimensions_mask & PGWS_DIMENSIONS_DB_ID)
-		values[5] = ObjectIdGetDatum(dimensions.database_id);
-	else
-		nulls[5] = true;
-	if (dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
-		values[6] = Int32GetDatum(dimensions.parallel_leader_pid);
-	else
-		nulls[6] = true;
-	if (dimensions_mask & PGWS_DIMENSIONS_IS_REGULAR_BE)
-		values[7] = BoolGetDatum(dimensions.is_regular_backend);
-	else
-		nulls[7] = true;
-	if (backend_type && (dimensions_mask & PGWS_DIMENSIONS_BE_TYPE))
-		values[8] = PointerGetDatum(cstring_to_text(backend_type));
-	else
-		nulls[8] = true;
-	if (!is_null_be_state && (dimensions_mask & PGWS_DIMENSIONS_BE_STATE))
-		values[9] = backend_state;
-	else
-		nulls[9] = true;
-	if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
-		values[10] = proc_start;
-	else
-		nulls[10] = true;
-	if (!is_null_client_addr && (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR))
-		values[11] = client_addr;
-	else
-		nulls[11] = true;
-	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
-		values[12] = PointerGetDatum(cstring_to_text(dimensions.client_hostname));
-	else
-		nulls[12] = true;
-	if (dimensions_mask & PGWS_DIMENSIONS_APPNAME)
-		values[13] = PointerGetDatum(cstring_to_text(dimensions.appname));
-	else
-		nulls[13] = true;
+	if (api_version >= PGWS_V1_2)
+	{
+		if (dimensions_mask & PGWS_DIMENSIONS_DB_ID)
+			values[5] = ObjectIdGetDatum(dimensions.database_id);
+		else
+			nulls[5] = true;
+		if (dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+			values[6] = Int32GetDatum(dimensions.parallel_leader_pid);
+		else
+			nulls[6] = true;
+		if (dimensions_mask & PGWS_DIMENSIONS_IS_REGULAR_BE)
+			values[7] = BoolGetDatum(dimensions.is_regular_backend);
+		else
+			nulls[7] = true;
+		if (backend_type && (dimensions_mask & PGWS_DIMENSIONS_BE_TYPE))
+			values[8] = PointerGetDatum(cstring_to_text(backend_type));
+		else
+			nulls[8] = true;
+		if (!is_null_be_state && (dimensions_mask & PGWS_DIMENSIONS_BE_STATE))
+			values[9] = backend_state;
+		else
+			nulls[9] = true;
+		if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
+			values[10] = proc_start;
+		else
+			nulls[10] = true;
+		if (!is_null_client_addr && (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR))
+			values[11] = client_addr;
+		else
+			nulls[11] = true;
+		if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+			values[12] = PointerGetDatum(cstring_to_text(dimensions.client_hostname));
+		else
+			nulls[12] = true;
+		if (dimensions_mask & PGWS_DIMENSIONS_APPNAME)
+			values[13] = PointerGetDatum(cstring_to_text(dimensions.appname));
+		else
+			nulls[13] = true;
+	}
 }
 
 PG_FUNCTION_INFO_V1(pg_wait_sampling_get_current);
 Datum
 pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 {
+	return pg_wait_sampling_get_current_internal(fcinfo, PGWS_V1_1);
+}
+
+PG_FUNCTION_INFO_V1(pg_wait_sampling_get_current_1_2);
+Datum
+pg_wait_sampling_get_current_1_2(PG_FUNCTION_ARGS)
+{
+	return pg_wait_sampling_get_current_internal(fcinfo, PGWS_V1_2);	
+}
+
+Datum
+pg_wait_sampling_get_current_internal(FunctionCallInfo fcinfo,
+									  pgwsVersion api_version)
+{
 	FuncCallContext *funcctx;
 	WaitCurrentContext *params;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 
 	check_shmem();
+
+	/*
+	 * Check we have the expected number of output arguments. Safety check
+	 */
+	switch (rsinfo->expectedDesc->natts + 1)
+	{
+		case PG_WAIT_SAMPLING_COLS_V1_1:
+			if (api_version != PGWS_V1_1)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		case PG_WAIT_SAMPLING_COLS_V1_2:
+			if (api_version != PGWS_V1_2)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		default:
+			elog(ERROR, "incorrect number of output arguments");
+	}
 
 	/* Initialization, done only on the first call */
 	if (SRF_IS_FIRSTCALL())
@@ -873,8 +931,8 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 
 		funcctx->user_fctx = params;
 		/* Setup tuple desc */
-		tupdesc = CreateTemplateTupleDesc(14);
-		fill_tuple_desc (tupdesc);
+		tupdesc = CreateTemplateTupleDesc(rsinfo->expectedDesc->natts);
+		fill_tuple_desc (tupdesc, api_version);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
 		LWLockAcquire(ProcArrayLock, LW_SHARED);
@@ -884,7 +942,6 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			/* pg_wait_sampling_get_current_extended(pid int4) function */
 			HistoryItem		*item;
 			PGPROC			*proc;
-			//PgBackendStatus *bestatus; not needed?
 
 			proc = search_proc(PG_GETARG_UINT32(0));
 
@@ -942,8 +999,8 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
 		HeapTuple	tuple;
-		Datum		values[14];
-		bool		nulls[14];
+		Datum		values[PG_WAIT_SAMPLING_COLS - 1];
+		bool		nulls[PG_WAIT_SAMPLING_COLS - 1];
 		HistoryItem *item;
 
 		item = &params->items[funcctx->call_cntr];
@@ -952,7 +1009,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		fill_values_and_nulls(values, nulls, item->dimensions, PGWS_DIMENSIONS_ALL);
+		fill_values_and_nulls(values, nulls, item->dimensions, PGWS_DIMENSIONS_ALL, api_version);
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
@@ -1123,10 +1180,42 @@ PG_FUNCTION_INFO_V1(pg_wait_sampling_get_profile);
 Datum
 pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 {
+	return pg_wait_sampling_get_profile_internal(fcinfo, PGWS_V1_1);
+}
+
+PG_FUNCTION_INFO_V1(pg_wait_sampling_get_profile_1_2);
+Datum
+pg_wait_sampling_get_profile_1_2(PG_FUNCTION_ARGS)
+{
+	return pg_wait_sampling_get_profile_internal(fcinfo, PGWS_V1_2);	
+}
+
+Datum
+pg_wait_sampling_get_profile_internal(FunctionCallInfo fcinfo,
+									  pgwsVersion api_version)
+{
 	Profile    *profile;
 	FuncCallContext *funcctx;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 
 	check_shmem();
+
+	/*
+	 * Check we have the expected number of output arguments. Safety check
+	 */
+	switch (rsinfo->expectedDesc->natts)
+	{
+		case PG_WAIT_SAMPLING_COLS_V1_1:
+			if (api_version != PGWS_V1_1)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		case PG_WAIT_SAMPLING_COLS_V1_2:
+			if (api_version != PGWS_V1_2)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		default:
+			elog(ERROR, "incorrect number of output arguments");
+	}
 
 	if (SRF_IS_FIRSTCALL())
 	{
@@ -1148,9 +1237,9 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		funcctx->max_calls = profile->count;
 
 		/* Make tuple descriptor */
-		tupdesc = CreateTemplateTupleDesc(15);
-		fill_tuple_desc (tupdesc);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 15, "count",
+		tupdesc = CreateTemplateTupleDesc(rsinfo->expectedDesc->natts);
+		fill_tuple_desc (tupdesc, api_version);
+		TupleDescInitEntry(tupdesc, (AttrNumber) rsinfo->expectedDesc->natts, "count",
 						   INT8OID, -1, 0);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -1165,8 +1254,8 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
 		/* for each row */
-		Datum		values[15];
-		bool		nulls[15];
+		Datum		values[PG_WAIT_SAMPLING_COLS];
+		bool		nulls[PG_WAIT_SAMPLING_COLS];
 		HeapTuple	tuple;
 		ProfileItem *item;
 
@@ -1176,8 +1265,9 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		fill_values_and_nulls(values, nulls, item->dimensions, pgws_profile_dimensions);
-		values[14] = UInt64GetDatum(item->count);
+		fill_values_and_nulls(values, nulls, item->dimensions,
+							  pgws_profile_dimensions, api_version);
+		values[rsinfo->expectedDesc->natts - 1] = UInt64GetDatum(item->count);
 	
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
@@ -1254,16 +1344,48 @@ PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history);
 Datum
 pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 {
+	return pg_wait_sampling_get_history_internal(fcinfo, PGWS_V1_1);
+}
+
+PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history_1_2);
+Datum
+pg_wait_sampling_get_history_1_2(PG_FUNCTION_ARGS)
+{
+	return pg_wait_sampling_get_history_internal(fcinfo, PGWS_V1_2);	
+}
+
+Datum
+pg_wait_sampling_get_history_internal(FunctionCallInfo fcinfo,
+									  pgwsVersion api_version)
+{
 	History    *history;
 	FuncCallContext *funcctx;
-	void	   *tmp_array;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 
 	check_shmem();
+
+	/*
+	 * Check we have the expected number of output arguments. Safety check
+	 */
+	switch (rsinfo->expectedDesc->natts)
+	{
+		case PG_WAIT_SAMPLING_COLS_V1_1:
+			if (api_version != PGWS_V1_1)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		case PG_WAIT_SAMPLING_COLS_V1_2:
+			if (api_version != PGWS_V1_2)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		default:
+			elog(ERROR, "incorrect number of output arguments");
+	}
 
 	if (SRF_IS_FIRSTCALL())
 	{
 		MemoryContext oldcontext;
 		TupleDesc	tupdesc;
+		void	   *tmp_array;
 		Size		serialized_size;
 
 		funcctx = SRF_FIRSTCALL_INIT();
@@ -1278,9 +1400,9 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		funcctx->max_calls = history->count;
 
 		/* Make tuple descriptor */
-		tupdesc = CreateTemplateTupleDesc(15);
-		fill_tuple_desc (tupdesc);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 15, "sample_ts", //XXX we have moved this to the end to have it more in line with current and profile; debatable; maybe move it to first place?
+		tupdesc = CreateTemplateTupleDesc(rsinfo->expectedDesc->natts);
+		fill_tuple_desc (tupdesc, api_version);
+		TupleDescInitEntry(tupdesc, (AttrNumber) rsinfo->expectedDesc->natts, "sample_ts", //XXX we have moved this to the end to have it more in line with current and profile; debatable; maybe move it to first place?
 						   TIMESTAMPTZOID, -1, 0);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -1296,8 +1418,8 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 	{
 		HeapTuple	tuple;
 		HistoryItem *item;
-		Datum		values[15];
-		bool		nulls[15];
+		Datum		values[PG_WAIT_SAMPLING_COLS];
+		bool		nulls[PG_WAIT_SAMPLING_COLS];
 
 		item = &history->items[history->index];
 
@@ -1305,8 +1427,9 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		fill_values_and_nulls(values, nulls, item->dimensions, pgws_history_dimensions);
-		values[14] = TimestampTzGetDatum(item->ts); //XXX same as above
+		fill_values_and_nulls(values, nulls, item->dimensions,
+							  pgws_history_dimensions, api_version);
+		values[rsinfo->expectedDesc->natts - 1] = TimestampTzGetDatum(item->ts); //XXX same as above
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 

@@ -42,7 +42,7 @@ CREATE FUNCTION pg_wait_sampling_get_current (
 	OUT appname text
 )
 RETURNS SETOF record
-AS 'MODULE_PATHNAME'
+AS 'MODULE_PATHNAME', 'pg_wait_sampling_get_current_1_2'
 LANGUAGE C VOLATILE CALLED ON NULL INPUT;
 
 CREATE VIEW pg_wait_sampling_current AS
@@ -68,7 +68,7 @@ CREATE FUNCTION pg_wait_sampling_get_history (
 	OUT ts timestamptz
 )
 RETURNS SETOF record
-AS 'MODULE_PATHNAME'
+AS 'MODULE_PATHNAME', 'pg_wait_sampling_get_history_1_2'
 LANGUAGE C VOLATILE STRICT;
 
 CREATE VIEW pg_wait_sampling_history AS
@@ -94,7 +94,7 @@ CREATE FUNCTION pg_wait_sampling_get_profile (
 	OUT count int8
 )
 RETURNS SETOF record
-AS 'MODULE_PATHNAME'
+AS 'MODULE_PATHNAME', 'pg_wait_sampling_get_profile_1_2'
 LANGUAGE C VOLATILE STRICT;
 
 CREATE VIEW pg_wait_sampling_profile AS
