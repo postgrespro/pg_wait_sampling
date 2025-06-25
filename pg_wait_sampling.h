@@ -28,8 +28,6 @@
 #define PGWS_COLLECTOR_LOCK			1
 
 /* Values for sampling dimensions */
-#define PGWS_DIMENSIONS_NONE				0
-
 #define PGWS_DIMENSIONS_PID					(1 << 0)
 #define PGWS_DIMENSIONS_WAIT_EVENT_TYPE		(1 << 1)
 #define PGWS_DIMENSIONS_WAIT_EVENT			(1 << 2)

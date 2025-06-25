@@ -9,24 +9,10 @@ WITH t as (SELECT sum(0) FROM pg_wait_sampling_history)
 WITH t as (SELECT sum(0) FROM pg_wait_sampling_profile)
 	SELECT sum(0) FROM generate_series(1, 2), t;
 
-WITH t as (SELECT sum(0) FROM pg_wait_sampling_current_extended)
-	SELECT sum(0) FROM generate_series(1, 2), t;
-
-WITH t as (SELECT sum(0) FROM pg_wait_sampling_history_extended)
-	SELECT sum(0) FROM generate_series(1, 2), t;
-
-WITH t as (SELECT sum(0) FROM pg_wait_sampling_profile_extended)
-	SELECT sum(0) FROM generate_series(1, 2), t;
-
 -- Some dummy checks just to be sure that all our functions work and return something.
 SELECT count(*) = 1 as test FROM pg_wait_sampling_get_current(pg_backend_pid());
 SELECT count(*) >= 0 as test FROM pg_wait_sampling_get_profile();
 SELECT count(*) >= 0 as test FROM pg_wait_sampling_get_history();
-SELECT pg_wait_sampling_reset_profile();
-
-SELECT count(*) = 1 as test FROM pg_wait_sampling_get_current_extended(pg_backend_pid());
-SELECT count(*) >= 0 as test FROM pg_wait_sampling_get_profile_extended();
-SELECT count(*) >= 0 as test FROM pg_wait_sampling_get_history_extended();
 SELECT pg_wait_sampling_reset_profile();
 
 DROP EXTENSION pg_wait_sampling;

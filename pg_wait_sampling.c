@@ -334,11 +334,9 @@ pgws_general_dimensions_check_hook (char **newvalue, void **extra, GucSource sou
 	int			extrachecks = 0;
 	int		   *myextra;
 
-	/* Check special cases when we turn all or none dimensions */
+	/* Check special case when we turn all dimensions */
 	if (pg_strcasecmp(*newvalue, "all") == 0)
 		extrachecks = PGWS_DIMENSIONS_ALL;
-	else if (pg_strcasecmp(*newvalue, "none") == 0)
-		extrachecks = PGWS_DIMENSIONS_NONE;
 	else
 	{
 		/* Need a modifiable copy of string */
@@ -388,7 +386,7 @@ pgws_general_dimensions_check_hook (char **newvalue, void **extra, GucSource sou
 				extrachecks |= PGWS_DIMENSIONS_CLIENT_HOSTNAME;
 			else if (pg_strcasecmp(tok, "appname") == 0)
 				extrachecks |= PGWS_DIMENSIONS_APPNAME;
-			else if (pg_strcasecmp(tok, "all") == 0 || pg_strcasecmp(tok, "none") == 0)
+			else if (pg_strcasecmp(tok, "all") == 0)
 			{
 				GUC_check_errdetail("Key word \"%s\" cannot be combined with other key words.", tok);
 				pfree(rawstring);
@@ -747,8 +745,17 @@ get_beentry_by_procpid(int pid)
 		/* Here beid is just index in localBackendStatusTable */
 		local_beentry = pgstat_fetch_stat_local_beentry(cur_be_idx);
 #endif
+#if defined(PGPRO_EE) || defined(PGPRO_STD) && PG_VERSION_NUM >= 160000
 		if (local_beentry->backendStatus->st_procpid == pid)
 			return local_beentry->backendStatus;
+#else
+		if (local_beentry->backendStatus.st_procpid == pid)
+		{
+			PgBackendStatus *result = palloc0(sizeof(PgBackendStatus));
+			*result = local_beentry->backendStatus;
+			return result;
+		}
+#endif
 	}
 	return NULL;
 }
@@ -831,12 +838,12 @@ fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions,
 		values[3] = UInt64GetDatum(dimensions.queryId);
 	else
 		values[3] = (Datum) 0;
-	if (dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
-		values[4] = ObjectIdGetDatum(dimensions.role_id);
-	else
-		nulls[4] = true;
 	if (api_version >= PGWS_V1_2)
 	{
+		if (dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
+			values[4] = ObjectIdGetDatum(dimensions.role_id);
+		else
+			nulls[4] = true;
 		if (dimensions_mask & PGWS_DIMENSIONS_DB_ID)
 			values[5] = ObjectIdGetDatum(dimensions.database_id);
 		else
@@ -887,7 +894,7 @@ PG_FUNCTION_INFO_V1(pg_wait_sampling_get_current_1_2);
 Datum
 pg_wait_sampling_get_current_1_2(PG_FUNCTION_ARGS)
 {
-	return pg_wait_sampling_get_current_internal(fcinfo, PGWS_V1_2);	
+	return pg_wait_sampling_get_current_internal(fcinfo, PGWS_V1_2);
 }
 
 Datum
@@ -1187,7 +1194,7 @@ PG_FUNCTION_INFO_V1(pg_wait_sampling_get_profile_1_2);
 Datum
 pg_wait_sampling_get_profile_1_2(PG_FUNCTION_ARGS)
 {
-	return pg_wait_sampling_get_profile_internal(fcinfo, PGWS_V1_2);	
+	return pg_wait_sampling_get_profile_internal(fcinfo, PGWS_V1_2);
 }
 
 Datum
@@ -1328,7 +1335,7 @@ pg_wait_sampling_reset_history(PG_FUNCTION_ARGS)
 	LockAcquire(&collectorTag, ExclusiveLock, false, false);
 	pgws_collector_hdr->request = HISTORY_RESET;
 	LockRelease(&collectorTag, ExclusiveLock, false);
-	
+
 	if (!pgws_collector_hdr->latch)
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
 						errmsg("pg_wait_sampling collector wasn't started")));
@@ -1351,7 +1358,7 @@ PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history_1_2);
 Datum
 pg_wait_sampling_get_history_1_2(PG_FUNCTION_ARGS)
 {
-	return pg_wait_sampling_get_history_internal(fcinfo, PGWS_V1_2);	
+	return pg_wait_sampling_get_history_internal(fcinfo, PGWS_V1_2);
 }
 
 Datum

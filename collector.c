@@ -95,7 +95,6 @@ realloc_history(History *observations, int count)
 				j;
 	int			serialized_size;
 
-	//saved_history_dimensions = pgws_history_dimensions; // TODO вроде как
 	serialized_size = get_serialized_size(saved_history_dimensions, true);
 
 	/* Allocate new array for history */
@@ -578,9 +577,6 @@ probe_waits(History *observations, HTAB *profile_hash,
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 	for (i = 0; i < ProcGlobal->allProcCount; i++)
 	{
-		//HistoryItem item_history,
-		//		   *observation;
-		//ProfileItem item_profile;
 		PGPROC	   *proc = &ProcGlobal->allProcs[i];
 		int 		pid;
 		uint32		wait_event_info;
@@ -610,9 +606,6 @@ probe_waits(History *observations, HTAB *profile_hash,
 		copy_dimensions(&profile_dimensions,
 						&common_dimensions,
 						saved_profile_dimensions);
-
-		//item_history.ts = ts;
-		//item_history.dimensions = history_dimensions;
 
 		/* Write to the history if needed */
 		if (write_history)
@@ -646,7 +639,7 @@ probe_waits(History *observations, HTAB *profile_hash,
 						   &serialized_item, &serialized_key, &serialized_size,
 						   (TimestampTz) 0, count, false);
 
-			stored_item = (char *) hash_search(profile_hash, serialized_key, 
+			stored_item = (char *) hash_search(profile_hash, serialized_key,
 											   HASH_ENTER, &found);
 
 			if (found)
@@ -673,7 +666,7 @@ probe_waits(History *observations, HTAB *profile_hash,
  * Send waits history to shared memory queue.
  */
 static void
-send_history(History *observations, shm_mq_handle *mqh) //TODO TODO TODO
+send_history(History *observations, shm_mq_handle *mqh)
 {
 	int			serialized_size = get_serialized_size(saved_history_dimensions, true);
 	Size		count,
