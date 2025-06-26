@@ -1,31 +1,61 @@
 CREATE EXTENSION pg_wait_sampling;
 \d pg_wait_sampling_current
-View "public.pg_wait_sampling_current"
-   Column   |  Type   | Modifiers 
-------------+---------+-----------
- pid        | integer | 
- event_type | text    | 
- event      | text    | 
- queryid    | bigint  | 
+                     View "public.pg_wait_sampling_current"
+       Column        |           Type           | Collation | Nullable | Default 
+---------------------+--------------------------+-----------+----------+---------
+ pid                 | integer                  |           |          | 
+ event_type          | text                     |           |          | 
+ event               | text                     |           |          | 
+ queryid             | bigint                   |           |          | 
+ role_id             | bigint                   |           |          | 
+ database_id         | bigint                   |           |          | 
+ parallel_leader_pid | integer                  |           |          | 
+ is_regular_backend  | boolean                  |           |          | 
+ backend_type        | text                     |           |          | 
+ backend_state       | text                     |           |          | 
+ proc_start          | timestamp with time zone |           |          | 
+ client_addr         | text                     |           |          | 
+ client_hostname     | text                     |           |          | 
+ appname             | text                     |           |          | 
 
 \d pg_wait_sampling_history
-      View "public.pg_wait_sampling_history"
-   Column   |           Type           | Modifiers 
-------------+--------------------------+-----------
- pid        | integer                  | 
- ts         | timestamp with time zone | 
- event_type | text                     | 
- event      | text                     | 
- queryid    | bigint                   | 
+                     View "public.pg_wait_sampling_history"
+       Column        |           Type           | Collation | Nullable | Default 
+---------------------+--------------------------+-----------+----------+---------
+ pid                 | integer                  |           |          | 
+ event_type          | text                     |           |          | 
+ event               | text                     |           |          | 
+ queryid             | bigint                   |           |          | 
+ role_id             | bigint                   |           |          | 
+ database_id         | bigint                   |           |          | 
+ parallel_leader_pid | integer                  |           |          | 
+ is_regular_backend  | boolean                  |           |          | 
+ backend_type        | text                     |           |          | 
+ backend_state       | text                     |           |          | 
+ proc_start          | timestamp with time zone |           |          | 
+ client_addr         | text                     |           |          | 
+ client_hostname     | text                     |           |          | 
+ appname             | text                     |           |          | 
+ ts                  | timestamp with time zone |           |          | 
 
 \d pg_wait_sampling_profile
-View "public.pg_wait_sampling_profile"
-   Column   |  Type   | Modifiers 
-------------+---------+-----------
- pid        | integer | 
- event_type | text    | 
- event      | text    | 
- queryid    | bigint  | 
- count      | bigint  | 
+                     View "public.pg_wait_sampling_profile"
+       Column        |           Type           | Collation | Nullable | Default 
+---------------------+--------------------------+-----------+----------+---------
+ pid                 | integer                  |           |          | 
+ event_type          | text                     |           |          | 
+ event               | text                     |           |          | 
+ queryid             | bigint                   |           |          | 
+ role_id             | bigint                   |           |          | 
+ database_id         | bigint                   |           |          | 
+ parallel_leader_pid | integer                  |           |          | 
+ is_regular_backend  | boolean                  |           |          | 
+ backend_type        | text                     |           |          | 
+ backend_state       | text                     |           |          | 
+ proc_start          | timestamp with time zone |           |          | 
+ client_addr         | text                     |           |          | 
+ client_hostname     | text                     |           |          | 
+ appname             | text                     |           |          | 
+ count               | bigint                   |           |          | 
 
 DROP EXTENSION pg_wait_sampling;

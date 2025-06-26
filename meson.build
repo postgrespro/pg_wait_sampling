@@ -24,6 +24,7 @@ install_data(
   'pg_wait_sampling.control',
   'pg_wait_sampling--1.0--1.1.sql',
   'pg_wait_sampling--1.1.sql',
+  'pg_wait_sampling--1.1--1.2.sql',
   kwargs: contrib_data_args,
 )
 
