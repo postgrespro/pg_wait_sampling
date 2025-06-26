@@ -31,7 +31,7 @@ When `pg_wait_sampling` is enabled, it collects two kinds of statistics.
    a client who periodically reads this history and dumps it somewhere, user
    can have continuous history of wait events.
  * Waits profile.  It's implemented as in-memory hash table where samples
-   are accumulated per each wait event and can be divided by process,
+   are accumulated per each wait event and can be divided by process, wait event,
    query and other dimensions. This hash table can be reset by user request.
    Assuming there is a client who periodically dumps profile and resets it,
    user can have statistics of wait events over time.
@@ -99,20 +99,6 @@ Usage
 `pg_wait_sampling_current` view – information about current wait events for
 all processes including background workers.
 
-| Column name | Column type |       Description       |
-| ----------- | ----------- | ----------------------- |
-| pid         | int4        | Id of process           |
-| event_type  | text        | Name of wait event type |
-| event       | text        | Name of wait event      |
-| queryid     | int8        | Id of query             |
-
-`pg_wait_sampling_get_current(pid int4)` returns the same table for single given
-process.
-
-`pg_wait_sampling_current_extended` view – information about current wait events for
-all processes including background workers. Structure of this view can be changed
-between verions.
-
 |     Column name     | Column type |         Description         |
 | ------------------- | ----------- | --------------------------- |
 | pid                 | int4        | Id of process               |
@@ -129,28 +115,15 @@ between verions.
 | client_hostname     | text        | Client hostname             |
 | appname             | text        | Application name            |
 
-`pg_wait_sampling_get_current_extended(pid int4)` returns the same table for single given
+`pg_wait_sampling_get_current(pid int4)` returns the same table for single given
 process.
 
 `pg_wait_sampling_history` view – history of wait events obtained by sampling into
 in-memory ring buffer.
 
-| Column name | Column type |       Description       |
-| ----------- | ----------- | ----------------------- |
-| pid         | int4        | Id of process           |
-| ts          | timestamptz | Sample timestamp        |
-| event_type  | text        | Name of wait event type |
-| event       | text        | Name of wait event      |
-| queryid     | int8        | Id of query             |
-
-`pg_wait_sampling_history_extended` view – history of wait events obtained by
-sampling into in-memory ring buffer. Structure of this view can be changed
-between verions
-
 |     Column name     | Column type |         Description         |
 | ------------------- | ----------- | --------------------------- |
 | pid                 | int4        | Id of process               |
-| ts                  | timestamptz | Sample timestamp            |
 | event_type          | text        | Name of wait event type     |
 | event               | text        | Name of wait event          |
 | queryid             | int8        | Id of query                 |
@@ -163,21 +136,12 @@ between verions
 | client_addr         | text        | Client address              |
 | client_hostname     | text        | Client hostname             |
 | appname             | text        | Application name            |
+| ts                  | timestamptz | Sample timestamp            |
+
+`pg_wait_sampling_reset_history()` function resets the history.
 
 `pg_wait_sampling_profile` view – profile of wait events obtained by sampling into
 in-memory hash table.
-
-| Column name | Column type |       Description       |
-| ----------- | ----------- | ----------------------- |
-| pid         | int4        | Id of process           |
-| event_type  | text        | Name of wait event type |
-| event       | text        | Name of wait event      |
-| queryid     | int8        | Id of query             |
-| count       | int8        | Count of samples        |
-
-`pg_wait_sampling_profile_extended` view – history of wait events obtained by
-sampling into in-memory ring buffer. Structure of this view can be changed
-between verions
 
 |     Column name     | Column type |         Description         |
 | ------------------- | ----------- | --------------------------- |
@@ -201,16 +165,16 @@ between verions
 The work of wait event statistics collector worker is controlled by following
 GUCs.
 
-| Parameter name                      | Data type | Description                                 | Default value |
-|-------------------------------------| --------- |---------------------------------------------|--------------:|
-| pg_wait_sampling.history_size       | int4      | Size of history in-memory ring buffer       |          5000 |
-| pg_wait_sampling.history_period     | int4      | Period for history sampling in milliseconds |            10 |
-| pg_wait_sampling.profile_period     | int4      | Period for profile sampling in milliseconds |            10 |
-| pg_wait_sampling.profile_pid        | bool      | Whether profile should be per pid           |          true |
-| pg_wait_sampling.profile_queries    | enum      | Whether profile should be per query         |           top |
-| pg_wait_sampling.sample_cpu         | bool      | Whether on CPU backends should be sampled   |          true |
-| pg_wait_sampling.history_dimensions | text      | Additional columns in extended history view |        'none' |
-| pg_wait_sampling.profile_dimensions | text      | Additional columns in extended profile view |        'none' |
+| Parameter name                      | Data type | Description                                 | Default value                                |
+|-------------------------------------| --------- |---------------------------------------------|----------------------------------------------|
+| pg_wait_sampling.history_size       | int4      | Size of history in-memory ring buffer       |                                         5000 |
+| pg_wait_sampling.history_period     | int4      | Period for history sampling in milliseconds |                                           10 |
+| pg_wait_sampling.profile_period     | int4      | Period for profile sampling in milliseconds |                                           10 |
+| pg_wait_sampling.profile_pid        | bool      | Whether profile should be per pid           |                                         true |
+| pg_wait_sampling.profile_queries    | enum      | Whether profile should be per query         |                                          top |
+| pg_wait_sampling.sample_cpu         | bool      | Whether on CPU backends should be sampled   |                                         true |
+| pg_wait_sampling.history_dimensions | text      | Additional columns in extended history view | 'pid, wait_event_type, wait_event, query_id' |
+| pg_wait_sampling.profile_dimensions | text      | Additional columns in extended profile view | 'pid, wait_event_type, wait_event, query_id' |
 
 If `pg_wait_sampling.profile_pid` is set to false, sampling profile wouldn't be
 collected in per-process manner.  In this case the value of pid could would
@@ -226,10 +190,11 @@ will be NULL.
 
 `pg_wait_sampling.history_dimenstions` and `pg_wait_sampling.profile_dimensions`
 determine what additional columns will be sampled in `history/profile_extended`
-views. Possible values are `none`, `all`, `role_id`, `database_id`,
-`parallel_leader_pid`, `backend_type`, `backend_state`, `backend_start_time`,
-`client_addr`, `client_hostname`, `appname` and any combination of column names.
-`none` and `all` cannot be used together with any other values and must be used alone.
+views. Possible values are `all`, `pid`, `wait_event_type`, `wait_event`,
+`query_id`, `role_id`, `database_id`, `parallel_leader_pid`, `backend_type`,
+`backend_state`, `backend_start_time`, `client_addr`, `client_hostname`,
+`appname` and any combination of column names.
+`all` cannot be used together with any other values and must be used alone.
 
 > [!WARNING]
 > Turning on any of the following columns: `backend_type`, `backend_state`,
@@ -238,8 +203,12 @@ views. Possible values are `none`, `all`, `role_id`, `database_id`,
 > BackendStatusTable. This is especially noticeable with PostgreSQL 13-16
 
 Values of these GUC variables can be changed only in config file or with ALTER SYSTEM.
-Then you need to reload server's configuration (such as with pg_reload_conf function)
+Then you need to reload server's configuration (such as with `pg_reload_conf` function)
 for changes to take effect.
+
+> [!WARNING]
+> When using `pg_reload_conf` you also need to invoke `pg_wait_sampling_reset_history()`
+> and `pg_wait_sampling_reset_profile()` for correct application of new dimensions
 
 See
 [PostgreSQL documentation](http://www.postgresql.org/docs/devel/static/monitoring-stats.html#WAIT-EVENT-TABLE)
