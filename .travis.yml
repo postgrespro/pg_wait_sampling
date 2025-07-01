@@ -9,7 +9,7 @@ env:
 - PG_MAJOR=14
 - PG_MAJOR=13
 before_script:
-- sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
+- sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
 - sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -p -i -v ${PG_MAJOR}
 - sudo systemctl stop postgresql
 script: ./run-tests.sh
