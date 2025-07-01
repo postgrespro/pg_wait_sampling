@@ -9,7 +9,7 @@ env:
 #- PG_MAJOR=14
 #- PG_MAJOR=13
 before_script:
-#- sudo rm /etc/apt/sources.list.d/postgresql.list
+- sudo rm /etc/apt/sources.list.d/postgresql.list
 - sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -p
 #- sudo apt-get install -y postgresql-common
 #- sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -p -i -v ${PG_MAJOR}
