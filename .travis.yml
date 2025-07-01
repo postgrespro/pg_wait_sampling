@@ -9,7 +9,7 @@ env:
 #- PG_MAJOR=14
 #- PG_MAJOR=13
 before_script:
-- sudo apt-get -y purge postgresql-client-common
+- sudo apt-get -y uninstall postgresql-client-common
 #- sudo rm /etc/apt/sources.list.d/postgresql.list
 #- sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -p
 #- sudo apt-get install -y postgresql-common
