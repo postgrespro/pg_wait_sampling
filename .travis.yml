@@ -11,6 +11,7 @@ env:
 before_script:
 - sudo rm /etc/apt/sources.list.d/postgresql.list
 - sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+- sudo apt-get install -y postgresql-common
 - sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -p -i -v ${PG_MAJOR}
 - sudo systemctl stop postgresql
 script: ./run-tests.sh
