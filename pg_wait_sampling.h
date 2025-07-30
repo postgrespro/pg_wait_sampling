@@ -34,6 +34,9 @@ typedef struct
 	int			pid;
 	uint32		wait_event_info;
 	uint64		queryId;
+	bool		isRegularBackend;
+	Oid			databaseId;
+	Oid			roleId;
 	TimestampTz ts;
 } HistoryItem;
 

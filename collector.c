@@ -175,6 +175,9 @@ probe_waits(History *observations, HTAB *profile_hash,
 			item.queryId = 0;
 
 		item.ts = ts;
+		item.isRegularBackend = !(proc->isBackgroundWorker);
+		item.databaseId = proc->databaseId;
+		item.roleId = proc->roleId;		
 
 		/* Write to the history if needed */
 		if (write_history)

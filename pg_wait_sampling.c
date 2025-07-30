@@ -508,7 +508,7 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		params->ts = GetCurrentTimestamp();
 
 		funcctx->user_fctx = params;
-		tupdesc = CreateTemplateTupleDesc(4);
+		tupdesc = CreateTemplateTupleDesc(7);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
 						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
@@ -517,6 +517,12 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
 						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "isregularbackend",
+						   BOOLOID, -1, 0);
+				TupleDescInitEntry(tupdesc, (AttrNumber) 6, "databaseid",
+						   OIDOID, -1, 0);
+				TupleDescInitEntry(tupdesc, (AttrNumber) 7, "roleid",
+						   OIDOID, -1, 0);
 
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -534,6 +540,9 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			item->pid = proc->pid;
 			item->wait_event_info = proc->wait_event_info;
 			item->queryId = pgws_proc_queryids[proc - ProcGlobal->allProcs];
+			item->isRegularBackend = !(proc->isBackgroundWorker);
+			item->databaseId = proc->databaseId;
+			item->roleId = proc->roleId;
 			funcctx->max_calls = 1;
 		}
 		else
@@ -556,6 +565,9 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 				params->items[j].pid = proc->pid;
 				params->items[j].wait_event_info = proc->wait_event_info;
 				params->items[j].queryId = pgws_proc_queryids[i];
+				params->items[j].isRegularBackend = !(proc->isBackgroundWorker);
+				params->items[j].databaseId = proc->databaseId;
+				params->items[j].roleId = proc->roleId;
 				j++;
 			}
 			funcctx->max_calls = j;
@@ -573,8 +585,8 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
 		HeapTuple	tuple;
-		Datum		values[4];
-		bool		nulls[4];
+		Datum		values[7];
+		bool		nulls[7];
 		const char *event_type,
 				   *event;
 		HistoryItem *item;
@@ -598,6 +610,9 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			nulls[2] = true;
 
 		values[3] = UInt64GetDatum(item->queryId);
+		values[4] = BoolGetDatum(item->isRegularBackend);
+		values[5] = ObjectIdGetDatum(item->databaseId);
+		values[6] = ObjectIdGetDatum(item->roleId);
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
@@ -864,7 +879,7 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		funcctx->max_calls = history->count;
 
 		/* Make tuple descriptor */
-		tupdesc = CreateTemplateTupleDesc(5);
+		tupdesc = CreateTemplateTupleDesc(8);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
 						   INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "sample_ts",
@@ -875,6 +890,13 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "queryid",
 						   INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "isregularbackend",
+						   BOOLOID, -1, 0),
+		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "databaseid",
+						   OIDOID, -1, 0),
+		TupleDescInitEntry(tupdesc, (AttrNumber) 8, "roleid",
+						   OIDOID, -1, 0);
+
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
 		MemoryContextSwitchTo(oldcontext);
@@ -889,8 +911,8 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 	{
 		HeapTuple	tuple;
 		HistoryItem *item;
-		Datum		values[5];
-		bool		nulls[5];
+		Datum		values[8];
+		bool		nulls[8];
 		const char *event_type,
 				   *event;
 
@@ -914,6 +936,9 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 			nulls[3] = true;
 
 		values[4] = UInt64GetDatum(item->queryId);
+		values[5] = BoolGetDatum(item->isRegularBackend);
+		values[6] = ObjectIdGetDatum(item->databaseId);
+		values[7] = ObjectIdGetDatum(item->roleId);
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		history->index++;
