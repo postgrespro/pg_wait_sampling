@@ -4,7 +4,7 @@ MODULE_big = pg_wait_sampling
 OBJS = pg_wait_sampling.o collector.o
 
 EXTENSION = pg_wait_sampling
-DATA = pg_wait_sampling--1.1.sql pg_wait_sampling--1.0--1.1.sql
+DATA = pg_wait_sampling--1.1.sql pg_wait_sampling--1.0--1.1.sql pg_wait_sampling--1.1--1.2.sql
 
 REGRESS = load queries
 

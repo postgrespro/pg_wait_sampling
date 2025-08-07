@@ -13,6 +13,7 @@
 
 #include "access/htup_details.h"
 #include "catalog/pg_type_d.h"
+#include "common/ip.h"
 #include "executor/executor.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -32,6 +33,7 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#include "utils/varlena.h"
 
 #if PG_VERSION_NUM < 150000
 #include "postmaster/autovacuum.h"
@@ -127,12 +129,30 @@ static const struct config_enum_entry pgws_profile_queries_options[] =
 	{NULL, 0, false}
 };
 
+/* like in pg_stat_statements */
+typedef enum pgwsVersion
+{
+	PGWS_V1_1 = 0,
+	PGWS_V1_2,
+} pgwsVersion;
+
+Datum pg_wait_sampling_get_current_internal(FunctionCallInfo fcinfo,
+											pgwsVersion api_version);
+Datum pg_wait_sampling_get_profile_internal(FunctionCallInfo fcinfo,
+											pgwsVersion api_version);
+Datum pg_wait_sampling_get_history_internal(FunctionCallInfo fcinfo,
+											pgwsVersion api_version);
+
 int			pgws_historySize = 5000;
 int			pgws_historyPeriod = 10;
 int			pgws_profilePeriod = 10;
 bool		pgws_profilePid = true;
 int			pgws_profileQueries = PGWS_PROFILE_QUERIES_TOP;
 bool		pgws_sampleCpu = true;
+static char *pgws_history_dimensions_string = NULL;
+static char *pgws_profile_dimensions_string = NULL;
+int			pgws_history_dimensions; /* bit mask that is derived from GUC */
+int			pgws_profile_dimensions; /* bit mask that is derived from GUC */
 
 #define pgws_enabled(level) \
 	((pgws_profileQueries == PGWS_PROFILE_QUERIES_ALL) || \
@@ -302,6 +322,117 @@ pgws_cleanup_callback(int code, Datum arg)
 }
 
 /*
+ * Check tokens of string and fill bitmask accordingly
+ * Mostly copied from plpgsql_extra_checks_check_hook
+ */
+static bool
+pgws_general_dimensions_check_hook (char **newvalue, void **extra, GucSource source)
+{
+	char	   *rawstring;
+	List	   *elemlist;
+	ListCell   *l;
+	int			extrachecks = 0;
+	int		   *myextra;
+
+	/* Check special case when we turn all dimensions */
+	if (pg_strcasecmp(*newvalue, "all") == 0)
+		extrachecks = PGWS_DIMENSIONS_ALL;
+	else
+	{
+		/* Need a modifiable copy of string */
+		rawstring = pstrdup(*newvalue);
+
+		/* Parse string into list of identifiers */
+		if (!SplitIdentifierString(rawstring, ',', &elemlist))
+		{
+			/* syntax error in list */
+			GUC_check_errdetail("List syntax is invalid.");
+			pfree(rawstring);
+			list_free(elemlist);
+			return false;
+		}
+
+		/* Loop over all recieved options */
+		foreach(l, elemlist)
+		{
+			char	   *tok = (char *) lfirst(l);
+
+			/* Process all allowed values */
+			if (pg_strcasecmp(tok, "pid") == 0)
+				extrachecks |= PGWS_DIMENSIONS_PID;
+			else if (pg_strcasecmp(tok, "wait_event_type") == 0)
+				extrachecks |= PGWS_DIMENSIONS_WAIT_EVENT_TYPE;
+			else if (pg_strcasecmp(tok, "wait_event") == 0)
+				extrachecks |= PGWS_DIMENSIONS_WAIT_EVENT;
+			else if (pg_strcasecmp(tok, "query_id") == 0)
+				extrachecks |= PGWD_DIMENSIONS_QUERY_ID;
+			else if (pg_strcasecmp(tok, "role_id") == 0)
+				extrachecks |= PGWS_DIMENSIONS_ROLE_ID;
+			else if (pg_strcasecmp(tok, "database_id") == 0)
+				extrachecks |= PGWS_DIMENSIONS_DB_ID;
+			else if (pg_strcasecmp(tok, "parallel_leader_pid") == 0)
+				extrachecks |= PGWS_DIMENSIONS_PARALLEL_LEADER_PID;
+			else if (pg_strcasecmp(tok, "is_regular_backend") == 0)
+				extrachecks |= PGWS_DIMENSIONS_IS_REGULAR_BE;
+			else if (pg_strcasecmp(tok, "backend_type") == 0)
+				extrachecks |= PGWS_DIMENSIONS_BE_TYPE;
+			else if (pg_strcasecmp(tok, "backend_state") == 0)
+				extrachecks |= PGWS_DIMENSIONS_BE_STATE;
+			else if (pg_strcasecmp(tok, "backend_start_time") == 0)
+				extrachecks |= PGWS_DIMENSIONS_BE_START_TIME;
+			else if (pg_strcasecmp(tok, "client_addr") == 0)
+				extrachecks |= PGWS_DIMENSIONS_CLIENT_ADDR;
+			else if (pg_strcasecmp(tok, "client_hostname") == 0)
+				extrachecks |= PGWS_DIMENSIONS_CLIENT_HOSTNAME;
+			else if (pg_strcasecmp(tok, "appname") == 0)
+				extrachecks |= PGWS_DIMENSIONS_APPNAME;
+			else if (pg_strcasecmp(tok, "all") == 0)
+			{
+				GUC_check_errdetail("Key word \"%s\" cannot be combined with other key words.", tok);
+				pfree(rawstring);
+				list_free(elemlist);
+				return false;
+			}
+			else
+			{
+				GUC_check_errdetail("Unrecognized key word: \"%s\".", tok);
+				pfree(rawstring);
+				list_free(elemlist);
+				return false;
+			}
+		}
+
+		pfree(rawstring);
+		list_free(elemlist);
+	}
+#if PG_VERSION_NUM >= 160000
+	myextra = (int *) guc_malloc(LOG, sizeof(int));
+#else
+	myextra = (int *) malloc(sizeof(int));
+#endif
+	if (!myextra)
+		return false;
+	*myextra = extrachecks;
+	*extra = myextra;
+
+	return true;
+}
+
+/* Assign actual value to dimension bitmask */
+static void
+pgws_history_dimensions_assign_hook (const char *newvalue, void *extra)
+{
+	pgws_history_dimensions = *((int *) extra);
+}
+
+/* Assign actual value to dimension bitmask */
+static void
+pgws_profile_dimensions_assign_hook (const char *newvalue, void *extra)
+{
+	pgws_profile_dimensions = *((int *) extra);
+}
+
+/*
  * Module load callback
  */
 void
@@ -421,6 +552,28 @@ _PG_init(void)
 							 NULL,
 							 NULL);
 
+	DefineCustomStringVariable("pg_wait_sampling.history_dimensions",
+							   "Sets sampling dimensions for history",
+							   NULL,
+							   &pgws_history_dimensions_string,
+							   "pid, wait_event_type, wait_event, query_id",
+							   PGC_SIGHUP,
+							   GUC_LIST_INPUT,
+							   pgws_general_dimensions_check_hook,
+							   pgws_history_dimensions_assign_hook,
+							   NULL);
+
+	DefineCustomStringVariable("pg_wait_sampling.profile_dimensions",
+							   "Sets sampling dimensions for profile",
+							   NULL,
+							   &pgws_profile_dimensions_string,
+							   "pid, wait_event_type, wait_event, query_id",
+							   PGC_SIGHUP,
+							   GUC_LIST_INPUT,
+							   pgws_general_dimensions_check_hook,
+							   pgws_profile_dimensions_assign_hook,
+							   NULL);
+
 #if PG_VERSION_NUM >= 150000
 	MarkGUCPrefixReserved("pg_wait_sampling");
 #endif
@@ -487,15 +640,291 @@ typedef struct
 	TimestampTz ts;
 } WaitCurrentContext;
 
+static Datum
+GetBackendState(BackendState state, bool *is_null)
+{
+	switch (state)
+	{
+#if PG_VERSION_NUM >= 180000
+		case STATE_STARTING:
+			return CStringGetTextDatum("starting");
+#endif
+		case STATE_IDLE:
+			return CStringGetTextDatum("idle");
+		case STATE_RUNNING:
+			return CStringGetTextDatum("active");
+		case STATE_IDLEINTRANSACTION:
+			return CStringGetTextDatum("idle in transaction");
+		case STATE_FASTPATH:
+			return CStringGetTextDatum("fastpath function call");
+		case STATE_IDLEINTRANSACTION_ABORTED:
+			return CStringGetTextDatum("idle in transaction (aborted)");
+		case STATE_DISABLED:
+			return CStringGetTextDatum("disabled");
+		case STATE_UNDEFINED:
+			*is_null = true;
+	}
+	return (Datum) 0;
+}
+
+/* Copied from pg_stat_get_backend_client_addr */
+static Datum
+get_backend_client_addr(SockAddr client_addr, bool *is_null)
+{
+	char		remote_host[NI_MAXHOST];
+	int			ret;
+
+	/* A zeroed client addr means we don't know */
+#if PG_VERSION_NUM >= 180000
+	if (pg_memory_is_all_zeros(&client_addr,
+							   sizeof(client_addr)))
+#else
+	SockAddr	zero_clientaddr;
+
+	memset(&zero_clientaddr, 0, sizeof(zero_clientaddr));
+	if (memcmp(&client_addr, &zero_clientaddr,
+			   sizeof(zero_clientaddr)) == 0)
+#endif
+	{
+		*is_null = true;
+		return (Datum) 0;
+	}
+
+	switch (client_addr.addr.ss_family)
+	{
+		case AF_INET:
+		case AF_INET6:
+			break;
+		default:
+			*is_null = true;
+			return (Datum) 0;
+	}
+
+	remote_host[0] = '\0';
+	ret = pg_getnameinfo_all(&client_addr.addr,
+							 client_addr.salen,
+							 remote_host, sizeof(remote_host),
+							 NULL, 0,
+							 NI_NUMERICHOST | NI_NUMERICSERV);
+	if (ret != 0)
+	{
+		*is_null = true;
+		return (Datum) 0;
+	}
+
+	clean_ipv6_addr(client_addr.addr.ss_family, remote_host);
+
+	return (DirectFunctionCall1(inet_in, CStringGetDatum(remote_host)));
+}
+
+/*
+ * Needed for PostgreSQL 16 and earlier since there is no good way to get
+ * PgBackendStatus when having only PGPROC structure.
+ *
+ * pgstat_fetch_stat_beentry (13-15) works with indices of localBackendStatusTable
+ * pgstat_get_beentry_by_backend_id (16) works with "backend_ids", but we still
+ * cannot get them without looking into LocalPgBackendStatus, so work with indices
+ *
+ * This function is very inefficient
+ *
+ * Maybe we should just iterate over localBackendStatusTable and somehow get
+ * PGPROC entries from there but it is up for discussion
+ */
+PgBackendStatus *
+get_beentry_by_procpid(int pid)
+{
+	int backend_num = pgstat_fetch_stat_numbackends(), cur_be_idx;
+
+	for (cur_be_idx = 1; cur_be_idx <= backend_num; cur_be_idx++)
+	{
+		LocalPgBackendStatus *local_beentry;
+
+#if PG_VERSION_NUM >= 160000
+		local_beentry = pgstat_get_local_beentry_by_index(cur_be_idx);
+#else
+		/* Here beid is just index in localBackendStatusTable */
+		local_beentry = pgstat_fetch_stat_local_beentry(cur_be_idx);
+#endif
+#if defined(PGPRO_EE) || defined(PGPRO_STD) && PG_VERSION_NUM >= 160000
+		if (local_beentry->backendStatus->st_procpid == pid)
+			return local_beentry->backendStatus;
+#else
+		if (local_beentry->backendStatus.st_procpid == pid)
+		{
+			PgBackendStatus *result = palloc0(sizeof(PgBackendStatus));
+			*result = local_beentry->backendStatus;
+			return result;
+		}
+#endif
+	}
+	return NULL;
+}
+
+/* like in pg_stat_statements */
+#define PG_WAIT_SAMPLING_COLS_V1_1	5
+#define PG_WAIT_SAMPLING_COLS_V1_2	15
+#define PG_WAIT_SAMPLING_COLS		15	/* maximum of above */
+
+/*
+ * Common routine to fill "dimensions" part of tupdesc
+ */
+static void
+fill_tuple_desc (TupleDesc tupdesc, pgwsVersion api_version)
+{
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
+					   INT8OID, -1, 0);
+	if (api_version >= PGWS_V1_2)
+	{
+		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "role_id",
+						INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "database_id",
+						INT8OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "parallel_leader_pid",
+						INT4OID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 8, "is_regular_backend",
+						BOOLOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 9, "backend_type",
+						TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 10, "backend_state",
+						TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 11, "proc_start",
+						TIMESTAMPTZOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 12, "client_addr",
+						TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 13, "client_hostname",
+						TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 14, "appname",
+						TEXTOID, -1, 0);
+	}
+}
+
+static void
+fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions,
+					  int dimensions_mask, pgwsVersion api_version)
+{
+	const char *event_type,
+			   *event,
+			   *backend_type;
+	Datum		backend_state, proc_start, client_addr;
+	bool		is_null_be_state = false,
+				is_null_client_addr = false;
+
+	event_type = pgstat_get_wait_event_type(dimensions.wait_event_info);
+	event = pgstat_get_wait_event(dimensions.wait_event_info);
+	backend_type = GetBackendTypeDesc(dimensions.backend_type);
+	backend_state = GetBackendState(dimensions.backend_state, &is_null_be_state);
+	proc_start = TimestampTzGetDatum(dimensions.proc_start);
+	client_addr = get_backend_client_addr(dimensions.client_addr, &is_null_client_addr);
+
+	if (dimensions_mask & PGWS_DIMENSIONS_PID)
+		values[0] = Int32GetDatum(dimensions.pid);
+	else
+		values[0] = (Datum) 0;
+	if (event_type && (dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT_TYPE))
+		values[1] = PointerGetDatum(cstring_to_text(event_type));
+	else
+		nulls[1] = true;
+	if (event && (dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT))
+		values[2] = PointerGetDatum(cstring_to_text(event));
+	else
+		nulls[2] = true;
+	if (pgws_profileQueries || (dimensions_mask & PGWD_DIMENSIONS_QUERY_ID))
+		values[3] = UInt64GetDatum(dimensions.queryId);
+	else
+		values[3] = (Datum) 0;
+	if (api_version >= PGWS_V1_2)
+	{
+		if (dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
+			values[4] = ObjectIdGetDatum(dimensions.role_id);
+		else
+			nulls[4] = true;
+		if (dimensions_mask & PGWS_DIMENSIONS_DB_ID)
+			values[5] = ObjectIdGetDatum(dimensions.database_id);
+		else
+			nulls[5] = true;
+		if (dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+			values[6] = Int32GetDatum(dimensions.parallel_leader_pid);
+		else
+			nulls[6] = true;
+		if (dimensions_mask & PGWS_DIMENSIONS_IS_REGULAR_BE)
+			values[7] = BoolGetDatum(dimensions.is_regular_backend);
+		else
+			nulls[7] = true;
+		if (backend_type && (dimensions_mask & PGWS_DIMENSIONS_BE_TYPE))
+			values[8] = PointerGetDatum(cstring_to_text(backend_type));
+		else
+			nulls[8] = true;
+		if (!is_null_be_state && (dimensions_mask & PGWS_DIMENSIONS_BE_STATE))
+			values[9] = backend_state;
+		else
+			nulls[9] = true;
+		if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
+			values[10] = proc_start;
+		else
+			nulls[10] = true;
+		if (!is_null_client_addr && (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR))
+			values[11] = client_addr;
+		else
+			nulls[11] = true;
+		if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+			values[12] = PointerGetDatum(cstring_to_text(dimensions.client_hostname));
+		else
+			nulls[12] = true;
+		if (dimensions_mask & PGWS_DIMENSIONS_APPNAME)
+			values[13] = PointerGetDatum(cstring_to_text(dimensions.appname));
+		else
+			nulls[13] = true;
+	}
+}
+
 PG_FUNCTION_INFO_V1(pg_wait_sampling_get_current);
 Datum
 pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 {
+	return pg_wait_sampling_get_current_internal(fcinfo, PGWS_V1_1);
+}
+
+PG_FUNCTION_INFO_V1(pg_wait_sampling_get_current_1_2);
+Datum
+pg_wait_sampling_get_current_1_2(PG_FUNCTION_ARGS)
+{
+	return pg_wait_sampling_get_current_internal(fcinfo, PGWS_V1_2);
+}
+
+Datum
+pg_wait_sampling_get_current_internal(FunctionCallInfo fcinfo,
+									  pgwsVersion api_version)
+{
 	FuncCallContext *funcctx;
 	WaitCurrentContext *params;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 
 	check_shmem();
 
+	/*
+	 * Check we have the expected number of output arguments. Safety check
+	 */
+	switch (rsinfo->expectedDesc->natts + 1)
+	{
+		case PG_WAIT_SAMPLING_COLS_V1_1:
+			if (api_version != PGWS_V1_1)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		case PG_WAIT_SAMPLING_COLS_V1_2:
+			if (api_version != PGWS_V1_2)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		default:
+			elog(ERROR, "incorrect number of output arguments");
+	}
+
+	/* Initialization, done only on the first call */
 	if (SRF_IS_FIRSTCALL())
 	{
 		MemoryContext oldcontext;
@@ -508,32 +937,29 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		params->ts = GetCurrentTimestamp();
 
 		funcctx->user_fctx = params;
-		tupdesc = CreateTemplateTupleDesc(4);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
-						   INT8OID, -1, 0);
-
+		/* Setup tuple desc */
+		tupdesc = CreateTemplateTupleDesc(rsinfo->expectedDesc->natts);
+		fill_tuple_desc (tupdesc, api_version);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
 		LWLockAcquire(ProcArrayLock, LW_SHARED);
 
 		if (!PG_ARGISNULL(0))
 		{
-			/* pg_wait_sampling_get_current(pid int4) function */
-			HistoryItem *item;
-			PGPROC	   *proc;
+			/* pg_wait_sampling_get_current_extended(pid int4) function */
+			HistoryItem		*item;
+			PGPROC			*proc;
 
 			proc = search_proc(PG_GETARG_UINT32(0));
+
 			params->items = (HistoryItem *) palloc0(sizeof(HistoryItem));
 			item = &params->items[0];
-			item->pid = proc->pid;
-			item->wait_event_info = proc->wait_event_info;
-			item->queryId = pgws_proc_queryids[proc - ProcGlobal->allProcs];
+
+			fill_dimensions(&item->dimensions, proc, proc->pid,
+							proc->wait_event_info,
+							pgws_proc_queryids[proc - ProcGlobal->allProcs],
+							PGWS_DIMENSIONS_ALL);
+
 			funcctx->max_calls = 1;
 		}
 		else
@@ -546,22 +972,29 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 			params->items = (HistoryItem *) palloc0(sizeof(HistoryItem) * procCount);
 			for (i = 0; i < procCount; i++)
 			{
-				PGPROC	   *proc = &ProcGlobal->allProcs[i];
+				PGPROC 			*proc = &ProcGlobal->allProcs[i];
 
 				if (!pgws_should_sample_proc(proc,
-											 &params->items[j].pid,
-											 &params->items[j].wait_event_info))
+											 &params->items[j].dimensions.pid,
+											 &params->items[j].dimensions.wait_event_info))
 					continue;
 
-				params->items[j].pid = proc->pid;
-				params->items[j].wait_event_info = proc->wait_event_info;
-				params->items[j].queryId = pgws_proc_queryids[i];
+				fill_dimensions(&params->items[j].dimensions, proc, proc->pid,
+								proc->wait_event_info,
+								pgws_proc_queryids[proc - ProcGlobal->allProcs],
+								PGWS_DIMENSIONS_ALL);
+
 				j++;
 			}
 			funcctx->max_calls = j;
 		}
 
 		LWLockRelease(ProcArrayLock);
+#if PG_VERSION_NUM >= 140000
+		pgstat_clear_backend_activity_snapshot();
+#else
+		pgstat_clear_snapshot();
+#endif
 
 		MemoryContextSwitchTo(oldcontext);
 	}
@@ -573,10 +1006,8 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
 		HeapTuple	tuple;
-		Datum		values[4];
-		bool		nulls[4];
-		const char *event_type,
-				   *event;
+		Datum		values[PG_WAIT_SAMPLING_COLS - 1];
+		bool		nulls[PG_WAIT_SAMPLING_COLS - 1];
 		HistoryItem *item;
 
 		item = &params->items[funcctx->call_cntr];
@@ -585,19 +1016,8 @@ pg_wait_sampling_get_current(PG_FUNCTION_ARGS)
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		event_type = pgstat_get_wait_event_type(item->wait_event_info);
-		event = pgstat_get_wait_event(item->wait_event_info);
-		values[0] = Int32GetDatum(item->pid);
-		if (event_type)
-			values[1] = PointerGetDatum(cstring_to_text(event_type));
-		else
-			nulls[1] = true;
-		if (event)
-			values[2] = PointerGetDatum(cstring_to_text(event));
-		else
-			nulls[2] = true;
+		fill_values_and_nulls(values, nulls, item->dimensions, PGWS_DIMENSIONS_ALL, api_version);
 
-		values[3] = UInt64GetDatum(item->queryId);
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
@@ -628,7 +1048,7 @@ pgws_init_lock_tag(LOCKTAG *tag, uint32 lock)
 
 /* Get array (history or profile data) from shared memory */
 static void *
-receive_array(SHMRequest request, Size item_size, Size *count)
+receive_array(SHMRequest request, Size *item_size, Size *count, int *dimensions_mask)
 {
 	LOCKTAG		collectorTag;
 	shm_mq_result res;
@@ -690,17 +1110,25 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 
 		memcpy(count, data, sizeof(*count));
 
-		result = palloc(item_size * (*count));
+		res = shm_mq_receive(recv_mqh, &len, &data, false);
+		if (res != SHM_MQ_SUCCESS || len != sizeof(*dimensions_mask))
+			elog(ERROR, "error reading mq");
+
+		memcpy(dimensions_mask, data, sizeof(*dimensions_mask));
+
+		*item_size = get_serialized_size(*dimensions_mask, true);
+
+		result = palloc(*item_size * (*count));
 		ptr = result;
 
 		for (i = 0; i < *count; i++)
 		{
 			res = shm_mq_receive(recv_mqh, &len, &data, false);
-			if (res != SHM_MQ_SUCCESS || len != item_size)
+			if (res != SHM_MQ_SUCCESS || len != *item_size)
 				elog(ERROR, "error reading mq");
 
-			memcpy(ptr, data, item_size);
-			ptr += item_size;
+			memcpy(ptr, data, *item_size);
+			ptr += *item_size;
 		}
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(pgws_cleanup_callback, 0);
@@ -712,43 +1140,113 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	return result;
 }
 
+static void *
+deserialize_array(void *tmp_array, int count, bool is_history)
+{
+	Pointer result,
+			ptr;
+	int 	i;
+	int		dimensions_mask = (is_history ? saved_history_dimensions : saved_profile_dimensions);
+	int		serialized_size = get_serialized_size(dimensions_mask, true);
+
+	result = palloc0((is_history ? sizeof(HistoryItem) : sizeof(ProfileItem)) * count);
+	ptr = result;
+
+	for (i = 0; i < count; i++)
+	{
+		SamplingDimensions	tmp_dimensions;
+		char			   *cur_item;
+		TimestampTz		   *ts;
+		uint64			   *count;
+		int					ts_count_size = sizeof(uint64); /* is 8 bytes anyway */
+
+		cur_item = (((char *) tmp_array) + i * serialized_size);
+		ts = (is_history ? palloc0(sizeof(TimestampTz)) : NULL);
+		count = (is_history ? NULL : palloc0(sizeof(uint64)));
+
+		deserialize_item(&tmp_dimensions, cur_item, dimensions_mask, ts, count);
+
+		memcpy(ptr, &tmp_dimensions, sizeof(SamplingDimensions));
+		ptr += sizeof(SamplingDimensions);
+		if (is_history)
+		{
+			memcpy(ptr, ts, ts_count_size);
+			ptr += sizeof(TimestampTz);
+		}
+		else
+		{
+			memcpy(ptr, count, ts_count_size);
+			ptr += sizeof(uint64);
+		}
+	}
+
+	return result;
+}
 
 PG_FUNCTION_INFO_V1(pg_wait_sampling_get_profile);
 Datum
 pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 {
+	return pg_wait_sampling_get_profile_internal(fcinfo, PGWS_V1_1);
+}
+
+PG_FUNCTION_INFO_V1(pg_wait_sampling_get_profile_1_2);
+Datum
+pg_wait_sampling_get_profile_1_2(PG_FUNCTION_ARGS)
+{
+	return pg_wait_sampling_get_profile_internal(fcinfo, PGWS_V1_2);
+}
+
+Datum
+pg_wait_sampling_get_profile_internal(FunctionCallInfo fcinfo,
+									  pgwsVersion api_version)
+{
 	Profile    *profile;
 	FuncCallContext *funcctx;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 
 	check_shmem();
+
+	/*
+	 * Check we have the expected number of output arguments. Safety check
+	 */
+	switch (rsinfo->expectedDesc->natts)
+	{
+		case PG_WAIT_SAMPLING_COLS_V1_1:
+			if (api_version != PGWS_V1_1)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		case PG_WAIT_SAMPLING_COLS_V1_2:
+			if (api_version != PGWS_V1_2)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		default:
+			elog(ERROR, "incorrect number of output arguments");
+	}
 
 	if (SRF_IS_FIRSTCALL())
 	{
 		MemoryContext oldcontext;
 		TupleDesc	tupdesc;
+		void	   *tmp_array;
+		Size		serialized_size;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
 		/* Receive profile from shmq */
 		profile = (Profile *) palloc0(sizeof(Profile));
-		profile->items = (ProfileItem *) receive_array(PROFILE_REQUEST,
-													   sizeof(ProfileItem), &profile->count);
-
+		
+		tmp_array = receive_array(PROFILE_REQUEST, &serialized_size,
+								  &profile->count, &saved_profile_dimensions);
+		profile->items = (ProfileItem *) deserialize_array(tmp_array, profile->count, false);
 		funcctx->user_fctx = profile;
 		funcctx->max_calls = profile->count;
 
 		/* Make tuple descriptor */
-		tupdesc = CreateTemplateTupleDesc(5);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "event",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "queryid",
-						   INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "count",
+		tupdesc = CreateTemplateTupleDesc(rsinfo->expectedDesc->natts);
+		fill_tuple_desc (tupdesc, api_version);
+		TupleDescInitEntry(tupdesc, (AttrNumber) rsinfo->expectedDesc->natts, "count",
 						   INT8OID, -1, 0);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
@@ -763,38 +1261,21 @@ pg_wait_sampling_get_profile(PG_FUNCTION_ARGS)
 	if (funcctx->call_cntr < funcctx->max_calls)
 	{
 		/* for each row */
-		Datum		values[5];
-		bool		nulls[5];
+		Datum		values[PG_WAIT_SAMPLING_COLS];
+		bool		nulls[PG_WAIT_SAMPLING_COLS];
 		HeapTuple	tuple;
 		ProfileItem *item;
-		const char *event_type,
-				   *event;
 
 		item = &profile->items[funcctx->call_cntr];
 
+		/* Make and return next tuple to caller */
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		/* Make and return next tuple to caller */
-		event_type = pgstat_get_wait_event_type(item->wait_event_info);
-		event = pgstat_get_wait_event(item->wait_event_info);
-		values[0] = Int32GetDatum(item->pid);
-		if (event_type)
-			values[1] = PointerGetDatum(cstring_to_text(event_type));
-		else
-			nulls[1] = true;
-		if (event)
-			values[2] = PointerGetDatum(cstring_to_text(event));
-		else
-			nulls[2] = true;
-
-		if (pgws_profileQueries)
-			values[3] = UInt64GetDatum(item->queryId);
-		else
-			values[3] = (Datum) 0;
-
-		values[4] = UInt64GetDatum(item->count);
-
+		fill_values_and_nulls(values, nulls, item->dimensions,
+							  pgws_profile_dimensions, api_version);
+		values[rsinfo->expectedDesc->natts - 1] = UInt64GetDatum(item->count);
+	
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
@@ -838,43 +1319,98 @@ pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
+PG_FUNCTION_INFO_V1(pg_wait_sampling_reset_history);
+Datum
+pg_wait_sampling_reset_history(PG_FUNCTION_ARGS)
+{
+	LOCKTAG		collectorTag;
+
+	check_shmem();
+
+	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
+
+	LockAcquire(&queueTag, ExclusiveLock, false, false);
+
+	pgws_init_lock_tag(&collectorTag, PGWS_COLLECTOR_LOCK);
+	LockAcquire(&collectorTag, ExclusiveLock, false, false);
+	pgws_collector_hdr->request = HISTORY_RESET;
+	LockRelease(&collectorTag, ExclusiveLock, false);
+
+	if (!pgws_collector_hdr->latch)
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("pg_wait_sampling collector wasn't started")));
+
+	SetLatch(pgws_collector_hdr->latch);
+
+	LockRelease(&queueTag, ExclusiveLock, false);
+
+	PG_RETURN_VOID();
+}
+
 PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history);
 Datum
 pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 {
+	return pg_wait_sampling_get_history_internal(fcinfo, PGWS_V1_1);
+}
+
+PG_FUNCTION_INFO_V1(pg_wait_sampling_get_history_1_2);
+Datum
+pg_wait_sampling_get_history_1_2(PG_FUNCTION_ARGS)
+{
+	return pg_wait_sampling_get_history_internal(fcinfo, PGWS_V1_2);
+}
+
+Datum
+pg_wait_sampling_get_history_internal(FunctionCallInfo fcinfo,
+									  pgwsVersion api_version)
+{
 	History    *history;
 	FuncCallContext *funcctx;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 
 	check_shmem();
+
+	/*
+	 * Check we have the expected number of output arguments. Safety check
+	 */
+	switch (rsinfo->expectedDesc->natts)
+	{
+		case PG_WAIT_SAMPLING_COLS_V1_1:
+			if (api_version != PGWS_V1_1)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		case PG_WAIT_SAMPLING_COLS_V1_2:
+			if (api_version != PGWS_V1_2)
+				elog(ERROR, "incorrect number of output arguments");
+			break;
+		default:
+			elog(ERROR, "incorrect number of output arguments");
+	}
 
 	if (SRF_IS_FIRSTCALL())
 	{
 		MemoryContext oldcontext;
 		TupleDesc	tupdesc;
+		void	   *tmp_array;
+		Size		serialized_size;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
 		/* Receive history from shmq */
 		history = (History *) palloc0(sizeof(History));
-		history->items = (HistoryItem *) receive_array(HISTORY_REQUEST,
-													   sizeof(HistoryItem), &history->count);
-
+		tmp_array = receive_array(HISTORY_REQUEST, &serialized_size,
+								  &history->count, &saved_history_dimensions);
+		history->items = (HistoryItem *) deserialize_array(tmp_array, history->count, true);
 		funcctx->user_fctx = history;
 		funcctx->max_calls = history->count;
 
 		/* Make tuple descriptor */
-		tupdesc = CreateTemplateTupleDesc(5);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pid",
-						   INT4OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "sample_ts",
+		tupdesc = CreateTemplateTupleDesc(rsinfo->expectedDesc->natts);
+		fill_tuple_desc (tupdesc, api_version);
+		TupleDescInitEntry(tupdesc, (AttrNumber) rsinfo->expectedDesc->natts, "sample_ts", //XXX we have moved this to the end to have it more in line with current and profile; debatable; maybe move it to first place?
 						   TIMESTAMPTZOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "type",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "event",
-						   TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 5, "queryid",
-						   INT8OID, -1, 0);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
 		MemoryContextSwitchTo(oldcontext);
@@ -889,10 +1425,8 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 	{
 		HeapTuple	tuple;
 		HistoryItem *item;
-		Datum		values[5];
-		bool		nulls[5];
-		const char *event_type,
-				   *event;
+		Datum		values[PG_WAIT_SAMPLING_COLS];
+		bool		nulls[PG_WAIT_SAMPLING_COLS];
 
 		item = &history->items[history->index];
 
@@ -900,20 +1434,10 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		event_type = pgstat_get_wait_event_type(item->wait_event_info);
-		event = pgstat_get_wait_event(item->wait_event_info);
-		values[0] = Int32GetDatum(item->pid);
-		values[1] = TimestampTzGetDatum(item->ts);
-		if (event_type)
-			values[2] = PointerGetDatum(cstring_to_text(event_type));
-		else
-			nulls[2] = true;
-		if (event)
-			values[3] = PointerGetDatum(cstring_to_text(event));
-		else
-			nulls[3] = true;
+		fill_values_and_nulls(values, nulls, item->dimensions,
+							  pgws_history_dimensions, api_version);
+		values[rsinfo->expectedDesc->natts - 1] = TimestampTzGetDatum(item->ts); //XXX same as above
 
-		values[4] = UInt64GetDatum(item->queryId);
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 		history->index++;
