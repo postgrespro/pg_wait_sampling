@@ -62,7 +62,7 @@ typedef struct
 	/* Fields from BackendStatus */
 	BackendType	 backend_type;
 	BackendState backend_state;
-	TimestampTz	 proc_start;
+	TimestampTz	 backend_start;
 	SockAddr	 client_addr;
 	char		 client_hostname[NAMEDATALEN];
 	char		 appname[NAMEDATALEN];

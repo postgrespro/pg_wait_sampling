@@ -32,14 +32,14 @@ CREATE FUNCTION pg_wait_sampling_get_current (
 	OUT queryid int8,
 	OUT role_id int8,
 	OUT database_id int8,
-	OUT parallel_leader_pid int4,
+	OUT leader_pid int4,
 	OUT is_regular_backend bool,
 	OUT backend_type text,
 	OUT backend_state text,
-	OUT proc_start timestamptz,
-	OUT client_addr text,
+	OUT backend_start timestamptz,
+	OUT client_addr inet,
 	OUT client_hostname text,
-	OUT appname text
+	OUT application_name text
 )
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'pg_wait_sampling_get_current_1_2'
@@ -57,14 +57,14 @@ CREATE FUNCTION pg_wait_sampling_get_history (
 	OUT queryid int8,
 	OUT role_id int8,
 	OUT database_id int8,
-	OUT parallel_leader_pid int4,
+	OUT leader_pid int4,
 	OUT is_regular_backend bool,
 	OUT backend_type text,
 	OUT backend_state text,
-	OUT proc_start timestamptz,
-	OUT client_addr text,
+	OUT backend_start timestamptz,
+	OUT client_addr inet,
 	OUT client_hostname text,
-	OUT appname text,
+	OUT application_name text,
 	OUT ts timestamptz
 )
 RETURNS SETOF record
@@ -83,14 +83,14 @@ CREATE FUNCTION pg_wait_sampling_get_profile (
 	OUT queryid int8,
 	OUT role_id int8,
 	OUT database_id int8,
-	OUT parallel_leader_pid int4,
+	OUT leader_pid int4,
 	OUT is_regular_backend bool,
 	OUT backend_type text,
 	OUT backend_state text,
-	OUT proc_start timestamptz,
-	OUT client_addr text,
+	OUT backend_start timestamptz,
+	OUT client_addr inet,
 	OUT client_hostname text,
-	OUT appname text,
+	OUT application_name text,
 	OUT count int8
 )
 RETURNS SETOF record

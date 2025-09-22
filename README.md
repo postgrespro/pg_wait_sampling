@@ -107,13 +107,13 @@ all processes including background workers.
 | queryid             | int8        | Id of query                 |
 | role_id             | int4        | Id of role                  |
 | database_id         | int4        | Id of database              |
-| parallel_leader_pid | int4        | Id of parallel query leader |
+| leader_pid          | int4        | Id of parallel query leader |
 | backend_type        | text        | Name of backend type        |
 | backend_state       | text        | Name of backend state       |
-| proc_start          | timestamptz | Timestamp of process start  |
-| client_addr         | text        | Client address              |
+| backend_start       | timestamptz | Timestamp of process start  |
+| client_addr         | inet        | Client address              |
 | client_hostname     | text        | Client hostname             |
-| appname             | text        | Application name            |
+| application_name    | text        | Application name            |
 
 `pg_wait_sampling_get_current(pid int4)` returns the same table for single given
 process.
@@ -129,13 +129,13 @@ in-memory ring buffer.
 | queryid             | int8        | Id of query                 |
 | role_id             | int4        | Id of role                  |
 | database_id         | int4        | Id of database              |
-| parallel_leader_pid | int4        | Id of parallel query leader |
+| leader_pid          | int4        | Id of parallel query leader |
 | backend_type        | text        | Name of backend type        |
 | backend_state       | text        | Name of backend state       |
-| proc_start          | timestamptz | Timestamp of process start  |
-| client_addr         | text        | Client address              |
+| backend_start       | timestamptz | Timestamp of process start  |
+| client_addr         | inet        | Client address              |
 | client_hostname     | text        | Client hostname             |
-| appname             | text        | Application name            |
+| application_name    | text        | Application name            |
 | ts                  | timestamptz | Sample timestamp            |
 
 `pg_wait_sampling_reset_history()` function resets the history.
@@ -151,13 +151,13 @@ in-memory hash table.
 | queryid             | int8        | Id of query                 |
 | role_id             | int4        | Id of role                  |
 | database_id         | int4        | Id of database              |
-| parallel_leader_pid | int4        | Id of parallel query leader |
+| leader_pid          | int4        | Id of parallel query leader |
 | backend_type        | text        | Name of backend type        |
 | backend_state       | text        | Name of backend state       |
-| proc_start          | timestamptz | Timestamp of process start  |
-| client_addr         | text        | Client address              |
+| backend_start       | timestamptz | Timestamp of process start  |
+| client_addr         | inet        | Client address              |
 | client_hostname     | text        | Client hostname             |
-| appname             | text        | Application name            |
+| application_name    | text        | Application name            |
 | count               | int8        | Count of samples            |
 
 `pg_wait_sampling_reset_profile()` function resets the profile.
@@ -165,16 +165,16 @@ in-memory hash table.
 The work of wait event statistics collector worker is controlled by following
 GUCs.
 
-| Parameter name                      | Data type | Description                                 | Default value                                |
-|-------------------------------------| --------- |---------------------------------------------|----------------------------------------------|
-| pg_wait_sampling.history_size       | int4      | Size of history in-memory ring buffer       |                                         5000 |
-| pg_wait_sampling.history_period     | int4      | Period for history sampling in milliseconds |                                           10 |
-| pg_wait_sampling.profile_period     | int4      | Period for profile sampling in milliseconds |                                           10 |
-| pg_wait_sampling.profile_pid        | bool      | Whether profile should be per pid           |                                         true |
-| pg_wait_sampling.profile_queries    | enum      | Whether profile should be per query         |                                          top |
-| pg_wait_sampling.sample_cpu         | bool      | Whether on CPU backends should be sampled   |                                         true |
-| pg_wait_sampling.history_dimensions | text      | Additional columns in extended history view | 'pid, wait_event_type, wait_event, query_id' |
-| pg_wait_sampling.profile_dimensions | text      | Additional columns in extended profile view | 'pid, wait_event_type, wait_event, query_id' |
+| Parameter name                      | Data type | Description                                 | Default value         |
+|-------------------------------------| --------- |---------------------------------------------|-----------------------|
+| pg_wait_sampling.history_size       | int4      | Size of history in-memory ring buffer       |                  5000 |
+| pg_wait_sampling.history_period     | int4      | Period for history sampling in milliseconds |                    10 |
+| pg_wait_sampling.profile_period     | int4      | Period for profile sampling in milliseconds |                    10 |
+| pg_wait_sampling.profile_pid        | bool      | Whether profile should be per pid           |                  true |
+| pg_wait_sampling.profile_queries    | enum      | Whether profile should be per query         |                   top |
+| pg_wait_sampling.sample_cpu         | bool      | Whether on CPU backends should be sampled   |                  true |
+| pg_wait_sampling.history_dimensions | text      | Additional columns in extended history view | 'pid, event, queryid' |
+| pg_wait_sampling.profile_dimensions | text      | Additional columns in extended profile view | 'pid, event, queryid' |
 
 If `pg_wait_sampling.profile_pid` is set to false, sampling profile wouldn't be
 collected in per-process manner.  In this case the value of pid could would
@@ -190,17 +190,18 @@ will be NULL.
 
 `pg_wait_sampling.history_dimenstions` and `pg_wait_sampling.profile_dimensions`
 determine what additional columns will be sampled in `history/profile_extended`
-views. Possible values are `all`, `pid`, `wait_event_type`, `wait_event`,
-`query_id`, `role_id`, `database_id`, `parallel_leader_pid`, `backend_type`,
-`backend_state`, `backend_start_time`, `client_addr`, `client_hostname`,
-`appname` and any combination of column names.
+views. Possible values are `all`, `pid`, `event`, `query_id`, `role_id`,
+`database_id`, `leader_pid`, `backend_type`, `backend_state`, `backend_start`,
+`client_addr`, `client_hostname`, `application_name`
+and any combination of column names.
+`event` turns on and off both event and event_type columns.
 `all` cannot be used together with any other values and must be used alone.
 
 > [!WARNING]
 > Turning on any of the following columns: `backend_type`, `backend_state`,
-> `backend_start_time`, `client_addr`, `client_hostname`, `appname` will reduce
-> performance compared to sampling none of those due to the need to look into
-> BackendStatusTable. This is especially noticeable with PostgreSQL 13-16
+> `backend_start`, `client_addr`, `client_hostname`, `application_name` will
+> reduce performance compared to sampling none of those due to the need to look
+> into BackendStatusTable. This is especially noticeable with PostgreSQL 13-16
 
 Values of these GUC variables can be changed only in config file or with ALTER SYSTEM.
 Then you need to reload server's configuration (such as with `pg_reload_conf` function)

@@ -195,7 +195,8 @@ fill_dimensions(SamplingDimensions *dimensions, PGPROC *proc,
 		dimensions->database_id = database_id;
 
 	if (dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
-		dimensions->parallel_leader_pid = (lockGroupLeader ?
+		dimensions->parallel_leader_pid = (lockGroupLeader &&
+										   lockGroupLeader->pid != pid ?
 										   lockGroupLeader->pid :
 										   0);
 
@@ -220,7 +221,7 @@ fill_dimensions(SamplingDimensions *dimensions, PGPROC *proc,
 				dimensions->backend_state = bestatus->st_state;
 
 			if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
-				dimensions->proc_start = bestatus->st_proc_start_timestamp;
+				dimensions->backend_start = bestatus->st_proc_start_timestamp;
 
 			if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR)
 				dimensions->client_addr = bestatus->st_clientaddr;
@@ -248,7 +249,7 @@ copy_dimensions (SamplingDimensions *dst, SamplingDimensions *src,
 	if (dst_dimensions_mask & PGWD_DIMENSIONS_QUERY_ID)
 		dst->queryId = src->queryId;
 
-	if (dst_dimensions_mask & PGWD_DIMENSIONS_QUERY_ID)
+	if (dst_dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
 		dst->role_id = src->role_id;
 
 	if (dst_dimensions_mask & PGWS_DIMENSIONS_DB_ID)
@@ -267,7 +268,7 @@ copy_dimensions (SamplingDimensions *dst, SamplingDimensions *src,
 		dst->backend_state = src->backend_state;
 
 	if (dst_dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
-		dst->proc_start = src->proc_start;
+		dst->backend_start = src->backend_start;
 
 	if (dst_dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR)
 		dst->client_addr = src->client_addr;
@@ -305,7 +306,7 @@ get_serialized_size(int dimensions_mask, bool need_last_field)
 	if (dimensions_mask & PGWS_DIMENSIONS_BE_STATE)
 		serialized_size += sizeof(dimensions.backend_state);
 	if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
-		serialized_size += sizeof(dimensions.proc_start);
+		serialized_size += sizeof(dimensions.backend_start);
 	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR)
 		serialized_size += sizeof(dimensions.client_addr);
 	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
@@ -393,9 +394,9 @@ serialize_item(SamplingDimensions dimensions, int dimensions_mask,
 
 	if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
 	{
-		memcpy(dummy_array + *serialized_size, &dimensions.proc_start,
-			   sizeof(dimensions.proc_start));
-		*serialized_size += sizeof(dimensions.proc_start);
+		memcpy(dummy_array + *serialized_size, &dimensions.backend_start,
+			   sizeof(dimensions.backend_start));
+		*serialized_size += sizeof(dimensions.backend_start);
 	}
 
 	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR)
@@ -515,9 +516,9 @@ deserialize_item(SamplingDimensions *dimensions, char *serialized_item,
 
 	if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
 	{
-		memcpy(&dimensions->proc_start, serialized_item + idx,
-			   sizeof(dimensions->proc_start));
-		idx += sizeof(dimensions->proc_start);
+		memcpy(&dimensions->backend_start, serialized_item + idx,
+			   sizeof(dimensions->backend_start));
+		idx += sizeof(dimensions->backend_start);
 	}
 
 	if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR)
@@ -862,6 +863,18 @@ pgws_collector_main(Datum main_arg)
 		{
 			ConfigReloadPending = false;
 			ProcessConfigFile(PGC_SIGHUP);
+
+			/* Reset profile and history if needed */
+			if (pgws_history_dimensions != saved_history_dimensions)
+			{
+				pfree(observations.items);
+				alloc_history(&observations, pgws_historySize);
+			}
+			if (pgws_profile_dimensions != saved_profile_dimensions)
+			{
+				hash_destroy(profile_hash);
+				profile_hash = make_profile_hash();
+			}
 		}
 
 		/* Calculate time to next sample for history or profile */

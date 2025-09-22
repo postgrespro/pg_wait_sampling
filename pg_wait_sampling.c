@@ -339,6 +339,13 @@ pgws_general_dimensions_check_hook (char **newvalue, void **extra, GucSource sou
 		extrachecks = PGWS_DIMENSIONS_ALL;
 	else
 	{
+		/* Empty strings are not allowed */
+		if (strlen(*newvalue) == 0)
+		{
+			GUC_check_errdetail("Empty string is not allowed");
+			return false;
+		}
+
 		/* Need a modifiable copy of string */
 		rawstring = pstrdup(*newvalue);
 
@@ -360,17 +367,18 @@ pgws_general_dimensions_check_hook (char **newvalue, void **extra, GucSource sou
 			/* Process all allowed values */
 			if (pg_strcasecmp(tok, "pid") == 0)
 				extrachecks |= PGWS_DIMENSIONS_PID;
-			else if (pg_strcasecmp(tok, "wait_event_type") == 0)
-				extrachecks |= PGWS_DIMENSIONS_WAIT_EVENT_TYPE;
-			else if (pg_strcasecmp(tok, "wait_event") == 0)
+			else if (pg_strcasecmp(tok, "event") == 0)
+			{
 				extrachecks |= PGWS_DIMENSIONS_WAIT_EVENT;
-			else if (pg_strcasecmp(tok, "query_id") == 0)
+				extrachecks |= PGWS_DIMENSIONS_WAIT_EVENT_TYPE;
+			}
+			else if (pg_strcasecmp(tok, "queryid") == 0)
 				extrachecks |= PGWD_DIMENSIONS_QUERY_ID;
 			else if (pg_strcasecmp(tok, "role_id") == 0)
 				extrachecks |= PGWS_DIMENSIONS_ROLE_ID;
 			else if (pg_strcasecmp(tok, "database_id") == 0)
 				extrachecks |= PGWS_DIMENSIONS_DB_ID;
-			else if (pg_strcasecmp(tok, "parallel_leader_pid") == 0)
+			else if (pg_strcasecmp(tok, "leader_pid") == 0)
 				extrachecks |= PGWS_DIMENSIONS_PARALLEL_LEADER_PID;
 			else if (pg_strcasecmp(tok, "is_regular_backend") == 0)
 				extrachecks |= PGWS_DIMENSIONS_IS_REGULAR_BE;
@@ -378,13 +386,13 @@ pgws_general_dimensions_check_hook (char **newvalue, void **extra, GucSource sou
 				extrachecks |= PGWS_DIMENSIONS_BE_TYPE;
 			else if (pg_strcasecmp(tok, "backend_state") == 0)
 				extrachecks |= PGWS_DIMENSIONS_BE_STATE;
-			else if (pg_strcasecmp(tok, "backend_start_time") == 0)
+			else if (pg_strcasecmp(tok, "backend_start") == 0)
 				extrachecks |= PGWS_DIMENSIONS_BE_START_TIME;
 			else if (pg_strcasecmp(tok, "client_addr") == 0)
 				extrachecks |= PGWS_DIMENSIONS_CLIENT_ADDR;
 			else if (pg_strcasecmp(tok, "client_hostname") == 0)
 				extrachecks |= PGWS_DIMENSIONS_CLIENT_HOSTNAME;
-			else if (pg_strcasecmp(tok, "appname") == 0)
+			else if (pg_strcasecmp(tok, "application_name") == 0)
 				extrachecks |= PGWS_DIMENSIONS_APPNAME;
 			else if (pg_strcasecmp(tok, "all") == 0)
 			{
@@ -556,7 +564,7 @@ _PG_init(void)
 							   "Sets sampling dimensions for history",
 							   NULL,
 							   &pgws_history_dimensions_string,
-							   "pid, wait_event_type, wait_event, query_id",
+							   "pid, event, queryid",
 							   PGC_SIGHUP,
 							   GUC_LIST_INPUT,
 							   pgws_general_dimensions_check_hook,
@@ -567,7 +575,7 @@ _PG_init(void)
 							   "Sets sampling dimensions for profile",
 							   NULL,
 							   &pgws_profile_dimensions_string,
-							   "pid, wait_event_type, wait_event, query_id",
+							   "pid, event, queryid",
 							   PGC_SIGHUP,
 							   GUC_LIST_INPUT,
 							   pgws_general_dimensions_check_hook,
@@ -785,7 +793,7 @@ fill_tuple_desc (TupleDesc tupdesc, pgwsVersion api_version)
 						INT8OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 6, "database_id",
 						INT8OID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "parallel_leader_pid",
+		TupleDescInitEntry(tupdesc, (AttrNumber) 7, "leader_pid",
 						INT4OID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 8, "is_regular_backend",
 						BOOLOID, -1, 0);
@@ -793,10 +801,10 @@ fill_tuple_desc (TupleDesc tupdesc, pgwsVersion api_version)
 						TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 10, "backend_state",
 						TEXTOID, -1, 0);
-		TupleDescInitEntry(tupdesc, (AttrNumber) 11, "proc_start",
+		TupleDescInitEntry(tupdesc, (AttrNumber) 11, "backend_start",
 						TIMESTAMPTZOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 12, "client_addr",
-						TEXTOID, -1, 0);
+						INETOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 13, "client_hostname",
 						TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 14, "appname",
@@ -811,7 +819,7 @@ fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions,
 	const char *event_type,
 			   *event,
 			   *backend_type;
-	Datum		backend_state, proc_start, client_addr;
+	Datum		backend_state, backend_start, client_addr;
 	bool		is_null_be_state = false,
 				is_null_client_addr = false;
 
@@ -819,13 +827,13 @@ fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions,
 	event = pgstat_get_wait_event(dimensions.wait_event_info);
 	backend_type = GetBackendTypeDesc(dimensions.backend_type);
 	backend_state = GetBackendState(dimensions.backend_state, &is_null_be_state);
-	proc_start = TimestampTzGetDatum(dimensions.proc_start);
+	backend_start = TimestampTzGetDatum(dimensions.backend_start);
 	client_addr = get_backend_client_addr(dimensions.client_addr, &is_null_client_addr);
 
 	if (dimensions_mask & PGWS_DIMENSIONS_PID)
 		values[0] = Int32GetDatum(dimensions.pid);
 	else
-		values[0] = (Datum) 0;
+		nulls[0] = true;
 	if (event_type && (dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT_TYPE))
 		values[1] = PointerGetDatum(cstring_to_text(event_type));
 	else
@@ -837,7 +845,7 @@ fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions,
 	if (pgws_profileQueries || (dimensions_mask & PGWD_DIMENSIONS_QUERY_ID))
 		values[3] = UInt64GetDatum(dimensions.queryId);
 	else
-		values[3] = (Datum) 0;
+		nulls[3] = true;
 	if (api_version >= PGWS_V1_2)
 	{
 		if (dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
@@ -865,21 +873,23 @@ fill_values_and_nulls(Datum *values, bool *nulls, SamplingDimensions dimensions,
 		else
 			nulls[9] = true;
 		if (dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
-			values[10] = proc_start;
+			values[10] = backend_start;
 		else
 			nulls[10] = true;
 		if (!is_null_client_addr && (dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR))
 			values[11] = client_addr;
 		else
 			nulls[11] = true;
-		if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
+		if (dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME &&
+			strlen(dimensions.client_hostname) > 0) /* As in pg_stat_activity */
 			values[12] = PointerGetDatum(cstring_to_text(dimensions.client_hostname));
 		else
 			nulls[12] = true;
 		if (dimensions_mask & PGWS_DIMENSIONS_APPNAME)
 			values[13] = PointerGetDatum(cstring_to_text(dimensions.appname));
 		else
-			nulls[13] = true;
+			/* As in pg_stat_activity */
+			values[13] = PointerGetDatum(cstring_to_text(""));
 	}
 }
 
