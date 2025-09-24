@@ -235,51 +235,6 @@ fill_dimensions(SamplingDimensions *dimensions, PGPROC *proc,
 	}
 }
 
-static void
-copy_dimensions (SamplingDimensions *dst, SamplingDimensions *src,
-				 int dst_dimensions_mask)
-{
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_PID)
-		dst->pid = src->pid;
-
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT_TYPE ||
-		dst_dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT)
-		dst->wait_event_info = src->wait_event_info;
-
-	if (dst_dimensions_mask & PGWD_DIMENSIONS_QUERY_ID)
-		dst->queryId = src->queryId;
-
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
-		dst->role_id = src->role_id;
-
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_DB_ID)
-		dst->database_id = src->database_id;
-
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
-		dst->parallel_leader_pid = src->parallel_leader_pid;
-
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_IS_REGULAR_BE)
-		dst->is_regular_backend = src->is_regular_backend;
-
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_BE_TYPE)
-		dst->backend_type = src->backend_type;
-
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_BE_STATE)
-		dst->backend_state = src->backend_state;
-
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_BE_START_TIME)
-		dst->backend_start = src->backend_start;
-
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_CLIENT_ADDR)
-		dst->client_addr = src->client_addr;
-
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_CLIENT_HOSTNAME)
-		strcpy(dst->client_hostname, src->client_hostname);
-
-	if (dst_dimensions_mask & PGWS_DIMENSIONS_APPNAME)
-		strcpy(dst->appname, src->appname);
-}
-
 int
 get_serialized_size(int dimensions_mask, bool need_last_field)
 {
@@ -321,10 +276,10 @@ get_serialized_size(int dimensions_mask, bool need_last_field)
 
 static void
 serialize_item(SamplingDimensions dimensions, int dimensions_mask,
-			   char **serialized_item, char **serialized_key, int *serialized_size,
+			   char **serialized_item, int *serialized_size,
 			   TimestampTz ts, uint64 count, bool is_history)
 {
-	char	 dummy_array[sizeof(SamplingDimensions) + sizeof(uint64) + 1];
+	char	 dummy_array[sizeof(SamplingDimensions) + sizeof(uint64)];
 
 	memset(dummy_array, 0, sizeof(dummy_array));
 
@@ -420,10 +375,6 @@ serialize_item(SamplingDimensions dimensions, int dimensions_mask,
 		*serialized_size += sizeof(dimensions.appname);
 	}
 
-	/* copy all the fields without ts/count */
-	*serialized_key = palloc0(*serialized_size);
-	memcpy(*serialized_key, dummy_array, *serialized_size);
-
 	if (is_history)
 	{
 		memcpy(dummy_array + *serialized_size, &ts,
@@ -444,7 +395,7 @@ serialize_item(SamplingDimensions dimensions, int dimensions_mask,
 
 void
 deserialize_item(SamplingDimensions *dimensions, char *serialized_item,
-				 int dimensions_mask, TimestampTz *ts, uint64 *count)
+				 int dimensions_mask, TimestampTz *ts, uint64 *count, bool is_history)
 {
 	int 				idx = 0;
 
@@ -542,14 +493,13 @@ deserialize_item(SamplingDimensions *dimensions, char *serialized_item,
 		idx += sizeof(dimensions->appname);
 	}
 
-	if (ts)
+	if (is_history)
 	{
 		memcpy(ts, serialized_item + idx,
 			   sizeof(TimestampTz));
 		idx += sizeof(TimestampTz);
 	}
-
-	if (count)
+	else
 	{
 		memcpy(count, serialized_item + idx,
 			   sizeof(uint64));
@@ -581,9 +531,7 @@ probe_waits(History *observations, HTAB *profile_hash,
 		PGPROC	   *proc = &ProcGlobal->allProcs[i];
 		int 		pid;
 		uint32		wait_event_info;
-		SamplingDimensions common_dimensions,
-						   history_dimensions,
-						   profile_dimensions;
+		SamplingDimensions common_dimensions;
 		int			dimensions_mask_common = saved_history_dimensions |
 											 saved_profile_dimensions;
 
@@ -594,33 +542,25 @@ probe_waits(History *observations, HTAB *profile_hash,
 		/*
 		 * We zero dimensions with memset to avoid doing it field-by-field
 		 */
-		memset(&history_dimensions, 0, sizeof(SamplingDimensions));
-		memset(&profile_dimensions, 0, sizeof(SamplingDimensions));
 		memset(&common_dimensions, 0, sizeof(SamplingDimensions));
 
 		fill_dimensions(&common_dimensions, proc, pid, wait_event_info,
 						pgws_proc_queryids[i], dimensions_mask_common);
 
-		copy_dimensions(&history_dimensions,
-						&common_dimensions,
-						saved_history_dimensions);
-		copy_dimensions(&profile_dimensions,
-						&common_dimensions,
-						saved_profile_dimensions);
-
 		/* Write to the history if needed */
 		if (write_history)
 		{
-			char		*serialized_key,
-						*serialized_item,
+			char		*serialized_item,
 						*observation;
 			int			 serialized_size = 0;
 
 			observation = get_next_observation(observations);
-			serialize_item(history_dimensions, saved_history_dimensions,
-						   &serialized_item, &serialized_key, &serialized_size,
+			serialize_item(common_dimensions, saved_history_dimensions,
+						   &serialized_item, &serialized_size,
 						   ts, (uint64) 0, true);
 			memcpy(observation, serialized_item, serialized_size);
+
+			pfree(serialized_item);
 		}
 
 		/* Write to the profile if needed */
@@ -629,18 +569,17 @@ probe_waits(History *observations, HTAB *profile_hash,
 			bool		 found;
 			int			 serialized_size = 0;
 			uint64		 count = 1;
-			char		*serialized_key,
-						*serialized_item,
+			char		*serialized_item,
 						*stored_item;
 
 			if (!profile_pid)
-				profile_dimensions.pid = 0;
+				common_dimensions.pid = 0;
 
-			serialize_item(profile_dimensions, saved_profile_dimensions,
-						   &serialized_item, &serialized_key, &serialized_size,
+			serialize_item(common_dimensions, saved_profile_dimensions,
+						   &serialized_item, &serialized_size,
 						   (TimestampTz) 0, count, false);
 
-			stored_item = (char *) hash_search(profile_hash, serialized_key,
+			stored_item = (char *) hash_search(profile_hash, serialized_item,
 											   HASH_ENTER, &found);
 
 			if (found)
@@ -648,11 +587,11 @@ probe_waits(History *observations, HTAB *profile_hash,
 				memcpy(&count, (stored_item + serialized_size - sizeof(uint64)),
 					   sizeof(uint64));
 				count++;
-				memcpy((stored_item + serialized_size - sizeof(uint64)), &count,
-					   sizeof(uint64));
 			}
-			else
-				memcpy(stored_item, serialized_item, serialized_size);
+			/* Copy new or incremented count to hash table */
+			memcpy((stored_item + serialized_size - sizeof(uint64)), &count, sizeof(uint64));
+
+			pfree(serialized_item);
 		}
 	}
 	LWLockRelease(ProcArrayLock);

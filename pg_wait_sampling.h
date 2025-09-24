@@ -89,6 +89,7 @@ typedef struct
 	bool		wraparound;
 	Size		index;
 	Size		count;
+	int			dimensions_mask;
 	char		*serialized_items;
 	/* used only in pg_wait_sampling.c */
 	HistoryItem *items;
@@ -128,13 +129,11 @@ extern bool pgws_should_sample_proc(PGPROC *proc, int *pid_p, uint32 *wait_event
 extern PgBackendStatus* get_beentry_by_procpid(int pid);
 
 /* collector.c */
-extern int saved_profile_dimensions;
-extern int saved_history_dimensions;
 extern void fill_dimensions(SamplingDimensions *dimensions, PGPROC *proc,
 							int pid, uint32 wait_event_info, uint64 queryId,
 							int dimensions_mask);
 extern void deserialize_item(SamplingDimensions* dimensions, char* serialized_item,
-							 int dimensions_mask, TimestampTz* ts, uint64* count);
+							 int dimensions_mask, TimestampTz* ts, uint64* count, bool is_history);
 extern int get_serialized_size(int dimensions_mask, bool need_last_field);
 extern void pgws_register_wait_collector(void);
 extern PGDLLEXPORT void pgws_collector_main(Datum main_arg);
