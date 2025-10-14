@@ -299,17 +299,36 @@ make_profile_hash()
 
 /*
  * Delta between two timestamps in milliseconds.
+ * Also save microsecs to calculate rounding
  */
 static int64
-millisecs_diff(TimestampTz tz1, TimestampTz tz2)
+millisecs_diff(TimestampTz tz1, TimestampTz tz2, int *microsecs)
 {
-	long		secs;
-	int			microsecs;
+	long	secs;
 
-	TimestampDifference(tz1, tz2, &secs, &microsecs);
+	TimestampDifference(tz1, tz2, &secs, microsecs);
 
-	return secs * 1000 + microsecs / 1000;
+	return secs * 1000 + *microsecs / 1000;
+}
 
+/*
+ * Calculate time (in milliseconds) between two samples considering leftovers
+ */
+static void
+calculate_elapsed(int64 *elapsed, int64 *leftovers, int period,
+				  TimestampTz start, TimestampTz end)
+{
+	int			microsecs = 0;
+
+	*elapsed += millisecs_diff(start, end, &microsecs);
+	*leftovers += microsecs % 1000;
+
+	/* If leftovers are at least 1 microsecond */
+	if (*leftovers >= 1000)
+	{
+		*elapsed += *leftovers / 1000;
+		*leftovers %= 1000;
+	}
 }
 
 /*
@@ -323,8 +342,12 @@ pgws_collector_main(Datum main_arg)
 	MemoryContext old_context,
 				collector_context;
 	TimestampTz current_ts,
-				history_ts,
-				profile_ts;
+				previous_ts;
+	/* in microsecs */
+	int64		rounding_leftovers_history = 0,
+				rounding_leftovers_profile = 0;
+	int64		time_elapsed_history = 0,
+				time_elapsed_profile = 0;
 
 	/*
 	 * Establish signal handlers.
@@ -359,16 +382,15 @@ pgws_collector_main(Datum main_arg)
 	ereport(LOG, (errmsg("pg_wait_sampling collector started")));
 
 	/* Start counting time for history and profile samples */
-	profile_ts = history_ts = GetCurrentTimestamp();
+	previous_ts = GetCurrentTimestamp();
 
 	while (1)
 	{
 		int			rc;
 		shm_mq_handle *mqh;
-		int64		history_diff,
-					profile_diff;
 		bool		write_history,
 					write_profile;
+		int			time_to_sleep;
 
 		/* We need an explicit call for at least ProcSignal notifications. */
 		CHECK_FOR_INTERRUPTS();
@@ -382,29 +404,53 @@ pgws_collector_main(Datum main_arg)
 		/* Calculate time to next sample for history or profile */
 		current_ts = GetCurrentTimestamp();
 
-		history_diff = millisecs_diff(history_ts, current_ts);
-		profile_diff = millisecs_diff(profile_ts, current_ts);
+		calculate_elapsed(&time_elapsed_history, &rounding_leftovers_history,
+						  pgws_historyPeriod, previous_ts, current_ts);
+		calculate_elapsed(&time_elapsed_profile, &rounding_leftovers_profile,
+						  pgws_profilePeriod, previous_ts, current_ts);
 
-		write_history = (history_diff >= (int64) pgws_historyPeriod);
-		write_profile = (profile_diff >= (int64) pgws_profilePeriod);
+		write_history = (time_elapsed_history >= (int64) pgws_historyPeriod);
+		write_profile = (time_elapsed_profile >= (int64) pgws_profilePeriod);
 
 		if (write_history || write_profile)
 		{
 			probe_waits(&observations, profile_hash,
 						write_history, write_profile, pgws_profilePid);
-
+			previous_ts = current_ts;
 			if (write_history)
 			{
-				history_ts = current_ts;
-				history_diff = 0;
+				while (time_elapsed_history >= pgws_historyPeriod)
+				{
+					/*
+					 * Normally, this will happen only once, but if processor
+					 * is working overtime, time_elapsed could mount up.
+					 * We deliberately skip some samplings (well, we don't force
+					 * additional ones) in such case
+					 */
+					time_elapsed_history -= pgws_historyPeriod;
+				}
 			}
-
 			if (write_profile)
 			{
-				profile_ts = current_ts;
-				profile_diff = 0;
+				while (time_elapsed_profile >= pgws_profilePeriod)
+				{
+					/*
+					 * Normally, this will happen only once, but if processor
+					 * is working overtime, time_elapsed could mount up.
+					 * We deliberately skip some samplings (well, we don't force
+					 * additional ones) in such case
+					 */
+					time_elapsed_profile -= pgws_profilePeriod;
+				}
 			}
 		}
+
+		/* Calculate how much time we have to sleep until any next sampling */
+		time_to_sleep = Min(pgws_historyPeriod - (int) time_elapsed_history,
+							pgws_profilePeriod - (int) time_elapsed_profile);
+
+		if (time_to_sleep < 0)
+			time_to_sleep = 0;
 
 		/* Shutdown if requested */
 		if (shutdown_requested)
@@ -415,8 +461,7 @@ pgws_collector_main(Datum main_arg)
 		 * shared memory.
 		 */
 		rc = WaitLatch(&MyProc->procLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-					   Min(pgws_historyPeriod - (int) history_diff,
-						   pgws_historyPeriod - (int) profile_diff), PG_WAIT_EXTENSION);
+					    time_to_sleep, PG_WAIT_EXTENSION);
 
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
