@@ -622,6 +622,7 @@ typedef struct
 void
 pgws_init_lock_tag(LOCKTAG *tag, uint32 lock)
 {
+	memset(tag, 0, sizeof(LOCKTAG));
 	tag->locktag_field1 = PG_WAIT_SAMPLING_MAGIC;
 	tag->locktag_field2 = lock;
 	tag->locktag_field3 = 0;
