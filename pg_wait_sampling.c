@@ -638,9 +638,9 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	shm_mq_result res;
 	Size		len,
 				i;
-	void	   *data;
-	Pointer		result,
-				ptr;
+	void	   *data,
+			   *result;
+	char	   *ptr;
 	MemoryContext oldctx;
 
 	/* Ensure nobody else trying to send request to queue */
