@@ -32,6 +32,9 @@
 
 static volatile sig_atomic_t shutdown_requested = false;
 
+int saved_profile_dimensions;
+int saved_history_dimensions;
+
 static void handle_sigterm(SIGNAL_ARGS);
 
 /*
@@ -61,7 +64,8 @@ pgws_register_wait_collector(void)
 static void
 alloc_history(History *observations, int count)
 {
-	observations->items = (HistoryItem *) palloc0(sizeof(HistoryItem) * count);
+	saved_history_dimensions = pgws_history_dimensions;
+	observations->samples = (Sample *) palloc0(sizeof(Sample) * count);
 	observations->index = 0;
 	observations->count = count;
 	observations->wraparound = false;
@@ -73,13 +77,13 @@ alloc_history(History *observations, int count)
 static void
 realloc_history(History *observations, int count)
 {
-	HistoryItem *newitems;
+	Sample		*newitems;
 	int			copyCount,
 				i,
 				j;
 
 	/* Allocate new array for history */
-	newitems = (HistoryItem *) palloc0(sizeof(HistoryItem) * count);
+	newitems = (Sample *) palloc0(sizeof(Sample) * count);
 
 	/* Copy entries from old array to the new */
 	if (observations->wraparound)
@@ -98,14 +102,14 @@ realloc_history(History *observations, int count)
 	{
 		if (j >= observations->count)
 			j = 0;
-		memcpy(&newitems[i], &observations->items[j], sizeof(HistoryItem));
+		memcpy(&newitems[i], &observations->samples[j], sizeof(Sample));
 		i++;
 		j++;
 	}
 
 	/* Switch to new history array */
-	pfree(observations->items);
-	observations->items = newitems;
+	pfree(observations->samples);
+	observations->samples = newitems;
 	observations->index = copyCount;
 	observations->count = count;
 	observations->wraparound = false;
@@ -125,10 +129,10 @@ handle_sigterm(SIGNAL_ARGS)
 /*
  * Get next item of history with rotation.
  */
-static HistoryItem *
+static Sample *
 get_next_observation(History *observations)
 {
-	HistoryItem *result;
+	Sample *result;
 
 	/* Check for wraparound */
 	if (observations->index >= observations->count)
@@ -136,9 +140,42 @@ get_next_observation(History *observations)
 		observations->index = 0;
 		observations->wraparound = true;
 	}
-	result = &observations->items[observations->index];
+	result = &observations->samples[observations->index];
 	observations->index++;
 	return result;
+}
+
+void
+fill_sample(Sample *sample, PGPROC *proc, int pid, uint32 wait_event_info,
+			uint64 queryId, int dimensions_mask)
+{
+	Oid		role_id = proc->roleId;
+	Oid		database_id = proc->databaseId;
+	PGPROC *lockGroupLeader = proc->lockGroupLeader;
+#if PG_VERSION_NUM >= 180000
+	bool	is_regular_backend = proc->isRegularBackend;
+#else
+	bool	is_regular_backend = !proc->isBackgroundWorker;
+#endif
+
+	if (dimensions_mask & PGWS_DIMENSIONS_PID)
+		sample->pid = pid;
+	if (dimensions_mask & PGWS_DIMENSIONS_WAIT_EVENT)
+		sample->wait_event_info = wait_event_info;
+	if (pgws_profileQueries || (dimensions_mask & PGWD_DIMENSIONS_QUERY_ID))
+		sample->queryId = queryId;
+	/* Copy everything else we need from PGPROC */
+	if (dimensions_mask & PGWS_DIMENSIONS_ROLE_ID)
+		sample->role_id = role_id;
+	if (dimensions_mask & PGWS_DIMENSIONS_DB_ID)
+		sample->database_id = database_id;
+	if (dimensions_mask & PGWS_DIMENSIONS_PARALLEL_LEADER_PID)
+		sample->parallel_leader_pid = (lockGroupLeader &&
+										   lockGroupLeader->pid != pid ?
+										   lockGroupLeader->pid :
+										   0);
+	if (dimensions_mask & PGWS_DIMENSIONS_IS_REGULAR_BE)
+		sample->is_regular_backend = is_regular_backend;
 }
 
 /*
@@ -162,37 +199,38 @@ probe_waits(History *observations, HTAB *profile_hash,
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 	for (i = 0; i < ProcGlobal->allProcCount; i++)
 	{
-		HistoryItem item,
-				   *observation;
-		PGPROC	   *proc = &ProcGlobal->allProcs[i];
+		/* We do not copy PGPROC since it is very big */
+		PGPROC		*proc = &ProcGlobal->allProcs[i];
+		int			pid;
+		uint32		wait_event_info;
 
-		if (!pgws_should_sample_proc(proc, &item.pid, &item.wait_event_info))
+		if (!pgws_should_sample_proc(proc, &pid, &wait_event_info))
 			continue;
-
-		if (pgws_profileQueries)
-			item.queryId = pgws_proc_queryids[i];
-		else
-			item.queryId = 0;
-
-		item.ts = ts;
 
 		/* Write to the history if needed */
 		if (write_history)
 		{
-			observation = get_next_observation(observations);
-			*observation = item;
+			Sample *observation = get_next_observation(observations);
+			memset(observation, 0, sizeof(Sample));
+			fill_sample(observation, proc, pid, wait_event_info,
+						pgws_proc_queryids[i], saved_history_dimensions);
+			observation->ts = ts;
 		}
 
 		/* Write to the profile if needed */
 		if (write_profile)
 		{
-			ProfileItem *profileItem;
-			bool		found;
+			Sample	*profileItem;
+			Sample	key;
+			bool	found;
 
+			memset(&key, 0, sizeof(Sample));
+			fill_sample(&key, proc, pid, wait_event_info,
+						pgws_proc_queryids[i], saved_profile_dimensions);
 			if (!profile_pid)
-				item.pid = 0;
+				key.pid = 0;
 
-			profileItem = (ProfileItem *) hash_search(profile_hash, &item, HASH_ENTER, &found);
+			profileItem = (Sample *) hash_search(profile_hash, &key, HASH_ENTER, &found);
 			if (found)
 				profileItem->count++;
 			else
@@ -229,8 +267,8 @@ send_history(History *observations, shm_mq_handle *mqh)
 	for (i = 0; i < count; i++)
 	{
 		mq_result = shm_mq_send_compat(mqh,
-									   sizeof(HistoryItem),
-									   &observations->items[i],
+									   sizeof(Sample),
+									   &observations->samples[i],
 									   false,
 									   true);
 		if (mq_result == SHM_MQ_DETACHED)
@@ -249,10 +287,10 @@ send_history(History *observations, shm_mq_handle *mqh)
 static void
 send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 {
-	HASH_SEQ_STATUS scan_status;
-	ProfileItem *item;
-	Size		count = hash_get_num_entries(profile_hash);
-	shm_mq_result mq_result;
+	HASH_SEQ_STATUS	scan_status;
+	Sample			*sample;
+	Size			count = hash_get_num_entries(profile_hash);
+	shm_mq_result	mq_result;
 
 	/* Send array size first since receive_array expects this */
 	mq_result = shm_mq_send_compat(mqh, sizeof(count), &count, false, true);
@@ -264,9 +302,9 @@ send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
 		return;
 	}
 	hash_seq_init(&scan_status, profile_hash);
-	while ((item = (ProfileItem *) hash_seq_search(&scan_status)) != NULL)
+	while ((sample = (Sample *) hash_seq_search(&scan_status)) != NULL)
 	{
-		mq_result = shm_mq_send_compat(mqh, sizeof(ProfileItem), item, false,
+		mq_result = shm_mq_send_compat(mqh, sizeof(Sample), sample, false,
 									   true);
 		if (mq_result == SHM_MQ_DETACHED)
 		{
@@ -287,12 +325,10 @@ make_profile_hash()
 {
 	HASHCTL		hash_ctl;
 
-	if (pgws_profileQueries)
-		hash_ctl.keysize = offsetof(ProfileItem, count);
-	else
-		hash_ctl.keysize = offsetof(ProfileItem, queryId);
-
-	hash_ctl.entrysize = sizeof(ProfileItem);
+	saved_profile_dimensions = pgws_profile_dimensions;
+	/* Fields that are not in dimensions mask are zero and are included in key */
+	hash_ctl.keysize = offsetof(Sample, count);
+	hash_ctl.entrysize = sizeof(Sample);
 	return hash_create("Waits profile hash", 1024, &hash_ctl,
 					   HASH_ELEM | HASH_BLOBS);
 }
@@ -377,6 +413,18 @@ pgws_collector_main(Datum main_arg)
 		{
 			ConfigReloadPending = false;
 			ProcessConfigFile(PGC_SIGHUP);
+
+			/* Reset profile and history if needed */
+			if (pgws_history_dimensions != saved_history_dimensions)
+			{
+				pfree(observations.samples);
+				alloc_history(&observations, pgws_historySize);
+			}
+			if (pgws_profile_dimensions != saved_profile_dimensions)
+			{
+				hash_destroy(profile_hash);
+				profile_hash = make_profile_hash();
+			}
 		}
 
 		/* Calculate time to next sample for history or profile */
