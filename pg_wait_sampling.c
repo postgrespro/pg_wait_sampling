@@ -32,6 +32,9 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#if PG_VERSION_NUM >= 190000
+#include "utils/wait_event.h"
+#endif
 
 #if PG_VERSION_NUM < 150000
 #include "postmaster/autovacuum.h"
