@@ -283,7 +283,7 @@ send_profile(HTAB *profile_hash, shm_mq_handle *mqh)
  * Make hash table for wait profile.
  */
 static HTAB *
-make_profile_hash()
+make_profile_hash(void)
 {
 	HASHCTL		hash_ctl;
 
