@@ -379,7 +379,8 @@ _PG_init(void)
 							&pgws_historySize,
 							5000,
 							100,
-							INT_MAX,
+							/* to avoid error in collector.c:alloc_history */
+							MaxAllocSize / sizeof(HistoryItem),
 							PGC_SIGHUP,
 							0,
 							NULL,
