@@ -263,6 +263,8 @@ pgws_shmem_startup(void)
 	void	   *pgws;
 	shm_toc    *toc;
 
+	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+
 	pgws = ShmemInitStruct("pg_wait_sampling", segsize, &found);
 
 	if (!found)
@@ -292,6 +294,8 @@ pgws_shmem_startup(void)
 	}
 
 	shmem_initialized = true;
+
+	LWLockRelease(AddinShmemInitLock);
 
 	if (prev_shmem_startup_hook)
 		prev_shmem_startup_hook();
