@@ -63,10 +63,13 @@ shm_mq	   *pgws_collector_mq = NULL;
 uint64	   *pgws_proc_queryids = NULL;
 CollectorShmqHeader *pgws_collector_hdr = NULL;
 
-/* Receiver (backend) local shm_mq pointers and lock */
+/* Receiver (backend) local shm_mq pointers */
 static shm_mq *recv_mq = NULL;
 static shm_mq_handle *recv_mqh = NULL;
-static LOCKTAG queueTag;
+
+/* LWLock pointers */
+static LWLock	*queue_lock;
+LWLock			*collector_lock;
 
 /* Hook functions */
 #if PG_VERSION_NUM >= 150000
@@ -242,6 +245,10 @@ pgws_shmem_request(void)
 		prev_shmem_request_hook();
 
 	RequestAddinShmemSpace(pgws_shmem_size());
+
+	/* We request two different LWLock Tranches for ease of use */
+	RequestNamedLWLockTranche(PGWS_QUEUE_LOCK_NAME, 1);
+	RequestNamedLWLockTranche(PGWS_COLLECTOR_LOCK_NAME, 1);
 }
 #endif
 
@@ -256,11 +263,16 @@ pgws_shmem_startup(void)
 	void	   *pgws;
 	shm_toc    *toc;
 
+	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+
 	pgws = ShmemInitStruct("pg_wait_sampling", segsize, &found);
 
 	if (!found)
 	{
 		/* Create shared objects */
+		queue_lock = &(GetNamedLWLockTranche(PGWS_QUEUE_LOCK_NAME))->lock;
+		collector_lock = &(GetNamedLWLockTranche(PGWS_COLLECTOR_LOCK_NAME))->lock;
+
 		toc = shm_toc_create(PG_WAIT_SAMPLING_MAGIC, pgws, segsize);
 
 		pgws_collector_hdr = shm_toc_allocate(toc, sizeof(CollectorShmqHeader));
@@ -282,6 +294,8 @@ pgws_shmem_startup(void)
 	}
 
 	shmem_initialized = true;
+
+	LWLockRelease(AddinShmemInitLock);
 
 	if (prev_shmem_startup_hook)
 		prev_shmem_startup_hook();
@@ -305,7 +319,7 @@ pgws_cleanup_callback(int code, Datum arg)
 {
 	elog(DEBUG3, "pg_wait_sampling cleanup: detaching shm_mq and releasing queue lock");
 	shm_mq_detach(recv_mqh);
-	LockRelease(&queueTag, ExclusiveLock, false);
+	LWLockRelease(queue_lock);
 }
 
 /*
@@ -325,9 +339,13 @@ _PG_init(void)
 	 * resources in pgws_shmem_startup().
 	 *
 	 * If you change code here, don't forget to also report the modifications
-	 * in pgsp_shmem_request() for pg15 and later.
+	 * in pgws_shmem_request() for pg15 and later.
 	 */
 	RequestAddinShmemSpace(pgws_shmem_size());
+
+	/* We request two different LWLock Tranches for ease of use */
+	RequestNamedLWLockTranche(PGWS_QUEUE_LOCK_NAME, 1);
+	RequestNamedLWLockTranche(PGWS_COLLECTOR_LOCK_NAME, 1);
 #endif
 
 	pgws_register_wait_collector();
@@ -361,7 +379,8 @@ _PG_init(void)
 							&pgws_historySize,
 							5000,
 							100,
-							INT_MAX,
+							/* to avoid error in collector.c:alloc_history */
+							MaxAllocSize / sizeof(HistoryItem),
 							PGC_SIGHUP,
 							0,
 							NULL,
@@ -624,22 +643,10 @@ typedef struct
 	ProfileItem *items;
 } Profile;
 
-void
-pgws_init_lock_tag(LOCKTAG *tag, uint32 lock)
-{
-	tag->locktag_field1 = PG_WAIT_SAMPLING_MAGIC;
-	tag->locktag_field2 = lock;
-	tag->locktag_field3 = 0;
-	tag->locktag_field4 = 0;
-	tag->locktag_type = LOCKTAG_USERLOCK;
-	tag->locktag_lockmethodid = USER_LOCKMETHOD;
-}
-
 /* Get array (history or profile data) from shared memory */
 static void *
 receive_array(SHMRequest request, Size item_size, Size *count)
 {
-	LOCKTAG		collectorTag;
 	shm_mq_result res;
 	Size		len,
 				i;
@@ -649,14 +656,11 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	MemoryContext oldctx;
 
 	/* Ensure nobody else trying to send request to queue */
-	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
-	LockAcquire(&queueTag, ExclusiveLock, false, false);
-
-	pgws_init_lock_tag(&collectorTag, PGWS_COLLECTOR_LOCK);
-	LockAcquire(&collectorTag, ExclusiveLock, false, false);
+	LWLockAcquire(queue_lock, LW_EXCLUSIVE);
+	LWLockAcquire(collector_lock, LW_EXCLUSIVE);
 	recv_mq = shm_mq_create(pgws_collector_mq, COLLECTOR_QUEUE_SIZE);
 	pgws_collector_hdr->request = request;
-	LockRelease(&collectorTag, ExclusiveLock, false);
+	LWLockRelease(collector_lock);
 
         /*
          * Check that the collector was started to avoid NULL
@@ -716,7 +720,7 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 
 	/* We still have to detach and release lock during normal operation. */
 	shm_mq_detach(recv_mqh);
-	LockRelease(&queueTag, ExclusiveLock, false);
+	LWLockRelease(queue_lock);
 
 	return result;
 }
@@ -822,18 +826,12 @@ PG_FUNCTION_INFO_V1(pg_wait_sampling_reset_profile);
 Datum
 pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 {
-	LOCKTAG		collectorTag;
-
 	check_shmem();
 
-	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
-
-	LockAcquire(&queueTag, ExclusiveLock, false, false);
-
-	pgws_init_lock_tag(&collectorTag, PGWS_COLLECTOR_LOCK);
-	LockAcquire(&collectorTag, ExclusiveLock, false, false);
+	LWLockAcquire(queue_lock, LW_EXCLUSIVE);
+	LWLockAcquire(collector_lock, LW_EXCLUSIVE);
 	pgws_collector_hdr->request = PROFILE_RESET;
-	LockRelease(&collectorTag, ExclusiveLock, false);
+	LWLockRelease(collector_lock);
 
         /*
          * Check that the collector was started to avoid NULL
@@ -845,7 +843,7 @@ pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 
 	SetLatch(pgws_collector_hdr->latch);
 
-	LockRelease(&queueTag, ExclusiveLock, false);
+	LWLockRelease(queue_lock);
 
 	PG_RETURN_VOID();
 }

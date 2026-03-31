@@ -13,13 +13,14 @@
 #include "datatype/timestamp.h"
 #include "storage/latch.h"
 #include "storage/lock.h"
+#include "storage/lwlock.h"
 #include "storage/shm_mq.h"
 
 #define	PG_WAIT_SAMPLING_MAGIC		0xCA94B107
 #define COLLECTOR_QUEUE_SIZE		(16 * 1024)
 #define HISTORY_TIME_MULTIPLIER		10
-#define PGWS_QUEUE_LOCK				0
-#define PGWS_COLLECTOR_LOCK			1
+#define PGWS_QUEUE_LOCK_NAME		"pgws_queue_lock"
+#define PGWS_COLLECTOR_LOCK_NAME	"pgws_collector_lock"
 
 typedef struct
 {
@@ -68,10 +69,12 @@ extern int	pgws_profileQueries;
 extern bool pgws_sampleCpu;
 
 /* pg_wait_sampling.c */
-extern CollectorShmqHeader *pgws_collector_hdr;
 extern shm_mq *pgws_collector_mq;
 extern uint64 *pgws_proc_queryids;
-extern void pgws_init_lock_tag(LOCKTAG *tag, uint32 lock);
+extern CollectorShmqHeader *pgws_collector_hdr;
+
+extern LWLock *collector_lock;
+
 extern bool pgws_should_sample_proc(PGPROC *proc, int *pid_p, uint32 *wait_event_info_p);
 
 /* collector.c */
