@@ -32,7 +32,7 @@ shm_mq_send_compat(shm_mq_handle *mqh, Size nbytes, const void *data,
 static inline void
 InitPostgresCompat(const char *in_dbname, Oid dboid,
 				   const char *username, Oid useroid,
-				   bits32 flags,
+				   uint32 flags,
 				   char *out_dbname)
 {
 #if PG_VERSION_NUM >= 170000
