@@ -12,7 +12,6 @@
 
 #include "datatype/timestamp.h"
 #include "storage/latch.h"
-#include "storage/lock.h"
 #include "storage/lwlock.h"
 #include "storage/shm_mq.h"
 
@@ -60,6 +59,13 @@ typedef struct
 	SHMRequest	request;
 } CollectorShmqHeader;
 
+/* LWLock pointers */
+typedef struct pgwsLockSharedState
+{
+	LWLock	*queue_lock;
+	LWLock	*collector_lock;
+} pgwsLockSharedState;
+
 /* GUC variables */
 extern int	pgws_historySize;
 extern int	pgws_historyPeriod;
@@ -73,7 +79,7 @@ extern shm_mq *pgws_collector_mq;
 extern uint64 *pgws_proc_queryids;
 extern CollectorShmqHeader *pgws_collector_hdr;
 
-extern LWLock *collector_lock;
+extern pgwsLockSharedState *pgws_lss;
 
 extern bool pgws_should_sample_proc(PGPROC *proc, int *pid_p, uint32 *wait_event_info_p);
 
