@@ -426,10 +426,12 @@ pgws_collector_main(Datum main_arg)
 		/* Handle request if any */
 		if (pgws_collector_hdr->request != NO_REQUEST)
 		{
+			LOCKTAG		tag;
 			SHMRequest	request;
 
-			LWLockAcquire(pgws_lss->collector_lock, LW_EXCLUSIVE);
+			pgws_init_lock_tag(&tag, PGWS_COLLECTOR_LOCK);
 
+			LockAcquire(&tag, ExclusiveLock, false, false);
 			request = pgws_collector_hdr->request;
 			pgws_collector_hdr->request = NO_REQUEST;
 
@@ -473,7 +475,7 @@ pgws_collector_main(Datum main_arg)
 				hash_destroy(profile_hash);
 				profile_hash = make_profile_hash();
 			}
-			LWLockRelease(pgws_lss->collector_lock);
+			LockRelease(&tag, ExclusiveLock, false);
 		}
 	}
 
