@@ -664,10 +664,10 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	pgws_collector_hdr->request = request;
 	LockRelease(&collectorTag, ExclusiveLock, false);
 
-        /*
-         * Check that the collector was started to avoid NULL
-         * pointer dereference.
-         */
+    /*
+     * Check that the collector was started to avoid NULL
+     * pointer dereference.
+     */
 	if (!pgws_collector_hdr->latch)
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
 						errmsg("pg_wait_sampling collector wasn't started")));
@@ -846,10 +846,10 @@ pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 	pgws_collector_hdr->request = PROFILE_RESET;
 	LockRelease(&collectorTag, ExclusiveLock, false);
 
-        /*
-         * Check that the collector was started to avoid NULL
-         * pointer dereference.
-         */
+    /*
+     * Check that the collector was started to avoid NULL
+     * pointer dereference.
+     */
 	if (!pgws_collector_hdr->latch)
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
 						errmsg("pg_wait_sampling collector wasn't started")));
