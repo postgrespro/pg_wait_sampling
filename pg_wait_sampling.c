@@ -671,6 +671,11 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
 						errmsg("pg_wait_sampling collector wasn't started")));
 
+	/* Check that the collector exists to avoid getting stuck in shm_mq_receive */
+	if (pgws_collector_hdr->latch->owner_pid == 0)
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("pg_wait_sampling collector doesn't exist")));
+
 	SetLatch(pgws_collector_hdr->latch);
 
 	shm_mq_set_receiver(recv_mq, MyProc);
