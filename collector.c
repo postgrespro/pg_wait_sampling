@@ -527,5 +527,9 @@ pgws_collector_main(Datum main_arg)
 	MemoryContextReset(collector_context);
 
 	ereport(LOG, (errmsg("pg_wait_sampling collector shutting down")));
-	proc_exit(0);
+	/*
+	 * We want collector to be active until postmaster's shutdown
+	 * so to be restarted we have to exit with 1
+	 */
+	proc_exit(1);
 }
