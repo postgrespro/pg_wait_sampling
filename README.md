@@ -1,4 +1,4 @@
-[![Build Status](https://app.travis-ci.com/postgrespro/pg_wait_sampling.svg?branch=master)](https://app.travis-ci.com/postgrespro/pg_wait_sampling)
+[![pg_wait_sampling main workflow](https://github.com/postgrespro/pg_wait_sampling/actions/workflows/pgws-ci.yml/badge.svg)](https://github.com/postgrespro/pg_wait_sampling/actions/workflows/pgws-ci.yml)
 [![GitHub license](https://img.shields.io/badge/license-PostgreSQL-blue.svg)](https://raw.githubusercontent.com/postgrespro/pg_wait_sampling/master/LICENSE)
 
 `pg_wait_sampling` – sampling based statistics of wait events
