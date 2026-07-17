@@ -1,0 +1,43 @@
+name: pg_wait_sampling main workflow
+
+on: [push, pull_request]
+
+jobs:
+  run-tests:
+    name: Postgres ${{ matrix.pg }}
+    runs-on: ubuntu-24.04
+    strategy:
+         fail-fast: false
+         matrix:
+           pg:
+             - 14
+             - 15
+             - 16
+             - 17
+             - 18
+             - 19
+    steps:
+      - name: Install Postgres ${{ matrix.pg }}
+        uses: actions/checkout@v4
+
+      - name: Prepare
+        run: |
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo sed -i 's#Components: main#Components: main ${{ matrix.pg }}#' /etc/apt/sources.list.d/pgdg.sources
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            postgresql-client-${{ matrix.pg }} \
+            postgresql-${{ matrix.pg }} \
+            postgresql-server-dev-${{ matrix.pg }}
+
+      - name: Run tests Postgres ${{ matrix.pg }}
+        env:
+          PATH: /usr/lib/postgresql/${{ matrix.pg }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: ./run-tests.sh
+
+      - name: Read logs
+        if: failure()
+        run: |
+            cat regression.diffs
+            cat logfile
