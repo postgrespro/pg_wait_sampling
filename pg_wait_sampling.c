@@ -2,7 +2,7 @@
  * pg_wait_sampling.c
  *		Track information about wait events.
  *
- * Copyright (c) 2015-2025, Postgres Professional
+ * Copyright (c) 2015-2026, Postgres Professional
  *
  * IDENTIFICATION
  *	  contrib/pg_wait_sampling/pg_wait_sampling.c
@@ -75,9 +75,7 @@ static shmem_request_hook_type prev_shmem_request_hook = NULL;
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static PGPROC *search_proc(int backendPid);
 static PlannedStmt *pgws_planner_hook(Query *parse,
-#if PG_VERSION_NUM >= 130000
 									  const char *query_string,
-#endif
 									  int cursorOptions, ParamListInfo boundParams
 #if PG_VERSION_NUM >= 190000
 									  , ExplainState *es
@@ -87,7 +85,7 @@ static void pgws_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgws_ExecutorRun(QueryDesc *queryDesc,
 							 ScanDirection direction,
 							 uint64 count
-#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
+#if PG_VERSION_NUM < 180000
 							 ,bool execute_once
 #endif
 );
@@ -95,18 +93,12 @@ static void pgws_ExecutorFinish(QueryDesc *queryDesc);
 static void pgws_ExecutorEnd(QueryDesc *queryDesc);
 static void pgws_ProcessUtility(PlannedStmt *pstmt,
 								const char *queryString,
-#if PG_VERSION_NUM >= 140000
 								bool readOnlyTree,
-#endif
 								ProcessUtilityContext context,
 								ParamListInfo params,
 								QueryEnvironment *queryEnv,
 								DestReceiver *dest,
-#if PG_VERSION_NUM >= 130000
 								QueryCompletion *qc
-#else
-								char *completionTag
-#endif
 );
 
 /*---- GUC variables ----*/
@@ -958,9 +950,7 @@ pg_wait_sampling_get_history(PG_FUNCTION_ARGS)
  */
 static PlannedStmt *
 pgws_planner_hook(Query *parse,
-#if PG_VERSION_NUM >= 130000
 				  const char *query_string,
-#endif
 				  int cursorOptions,
 				  ParamListInfo boundParams
 #if PG_VERSION_NUM >= 190000
@@ -984,9 +974,7 @@ pgws_planner_hook(Query *parse,
 		/* Invoke original hook if needed */
 		if (planner_hook_next)
 			result = planner_hook_next(parse,
-#if PG_VERSION_NUM >= 130000
 									   query_string,
-#endif
 									   cursorOptions, boundParams
 #if PG_VERSION_NUM >= 190000
 									   , es
@@ -994,9 +982,7 @@ pgws_planner_hook(Query *parse,
 									   );
 		else
 			result = standard_planner(parse,
-#if PG_VERSION_NUM >= 130000
 									  query_string,
-#endif
 									  cursorOptions, boundParams
 #if PG_VERSION_NUM >= 190000
 									  , es
@@ -1042,7 +1028,7 @@ static void
 pgws_ExecutorRun(QueryDesc *queryDesc,
 				 ScanDirection direction,
 				 uint64 count
-#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
+#if PG_VERSION_NUM < 180000
 				 ,bool execute_once
 #endif
 )
@@ -1054,16 +1040,16 @@ pgws_ExecutorRun(QueryDesc *queryDesc,
 	PG_TRY();
 	{
 		if (prev_ExecutorRun)
-#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
-			prev_ExecutorRun(queryDesc, direction, count, execute_once);
-#else
+#if PG_VERSION_NUM >= 180000
 			prev_ExecutorRun(queryDesc, direction, count);
+#else
+			prev_ExecutorRun(queryDesc, direction, count, execute_once);
 #endif
 		else
-#if PG_VERSION_NUM >= 100000 && PG_VERSION_NUM < 180000
-			standard_ExecutorRun(queryDesc, direction, count, execute_once);
-#else
+#if PG_VERSION_NUM >= 180000
 			standard_ExecutorRun(queryDesc, direction, count);
+#else
+			standard_ExecutorRun(queryDesc, direction, count, execute_once);
 #endif
 		nesting_level--;
 		if (nesting_level == 0)
@@ -1131,18 +1117,12 @@ pgws_ExecutorEnd(QueryDesc *queryDesc)
 static void
 pgws_ProcessUtility(PlannedStmt *pstmt,
 					const char *queryString,
-#if PG_VERSION_NUM >= 140000
 					bool readOnlyTree,
-#endif
 					ProcessUtilityContext context,
 					ParamListInfo params,
 					QueryEnvironment *queryEnv,
 					DestReceiver *dest,
-#if PG_VERSION_NUM >= 130000
 					QueryCompletion *qc
-#else
-					char *completionTag
-#endif
 )
 {
 	int			i = MyProc - ProcGlobal->allProcs;
@@ -1159,30 +1139,16 @@ pgws_ProcessUtility(PlannedStmt *pstmt,
 	{
 		if (prev_ProcessUtility)
 			prev_ProcessUtility(pstmt, queryString,
-#if PG_VERSION_NUM >= 140000
 								readOnlyTree,
-#endif
 								context, params, queryEnv,
 								dest,
-#if PG_VERSION_NUM >= 130000
-								qc
-#else
-								completionTag
-#endif
-				);
+								qc);
 		else
 			standard_ProcessUtility(pstmt, queryString,
-#if PG_VERSION_NUM >= 140000
 									readOnlyTree,
-#endif
 									context, params, queryEnv,
 									dest,
-#if PG_VERSION_NUM >= 130000
-									qc
-#else
-									completionTag
-#endif
-				);
+									qc);
 		nesting_level--;
 		if (nesting_level == 0)
 			pgws_proc_queryids[i] = UINT64CONST(0);
