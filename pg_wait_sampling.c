@@ -654,6 +654,16 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	char	   *ptr;
 	MemoryContext oldctx;
 
+	/* Check that the collector was started to avoid NULL pointer dereference */
+	if (!pgws_collector_hdr->latch)
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("pg_wait_sampling collector wasn't started")));
+
+	/* Check that the collector exists to avoid getting stuck in shm_mq_receive */
+	if (pgws_collector_hdr->latch->owner_pid == 0)
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("pg_wait_sampling collector doesn't exist")));
+
 	/* Ensure nobody else trying to send request to queue */
 	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
 	LockAcquire(&queueTag, ExclusiveLock, false, false);
@@ -663,19 +673,6 @@ receive_array(SHMRequest request, Size item_size, Size *count)
 	recv_mq = shm_mq_create(pgws_collector_mq, COLLECTOR_QUEUE_SIZE);
 	pgws_collector_hdr->request = request;
 	LockRelease(&collectorTag, ExclusiveLock, false);
-
-    /*
-     * Check that the collector was started to avoid NULL
-     * pointer dereference.
-     */
-	if (!pgws_collector_hdr->latch)
-		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
-						errmsg("pg_wait_sampling collector wasn't started")));
-
-	/* Check that the collector exists to avoid getting stuck in shm_mq_receive */
-	if (pgws_collector_hdr->latch->owner_pid == 0)
-		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
-						errmsg("pg_wait_sampling collector doesn't exist")));
 
 	SetLatch(pgws_collector_hdr->latch);
 
@@ -837,6 +834,16 @@ pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 
 	check_shmem();
 
+	/* Check that the collector was started to avoid NULL pointer dereference */
+	if (!pgws_collector_hdr->latch)
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("pg_wait_sampling collector wasn't started")));
+
+	/* Check that the collector exists to avoid setting pgws_collector_hdr->request */
+	if (pgws_collector_hdr->latch->owner_pid == 0)
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+						errmsg("pg_wait_sampling collector doesn't exist")));
+
 	pgws_init_lock_tag(&queueTag, PGWS_QUEUE_LOCK);
 
 	LockAcquire(&queueTag, ExclusiveLock, false, false);
@@ -845,14 +852,6 @@ pg_wait_sampling_reset_profile(PG_FUNCTION_ARGS)
 	LockAcquire(&collectorTag, ExclusiveLock, false, false);
 	pgws_collector_hdr->request = PROFILE_RESET;
 	LockRelease(&collectorTag, ExclusiveLock, false);
-
-    /*
-     * Check that the collector was started to avoid NULL
-     * pointer dereference.
-     */
-	if (!pgws_collector_hdr->latch)
-		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
-						errmsg("pg_wait_sampling collector wasn't started")));
 
 	SetLatch(pgws_collector_hdr->latch);
 
